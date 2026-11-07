@@ -19,7 +19,7 @@ CONF_TOPIC_PREFIX: Final = "topic_prefix"
 DEFAULT_TITLE: Final = "Hildebrand Glow IHD"
 
 MANUFACTURER: Final = "Hildebrand Technology Limited"
-MODEL: Final = "Glow Smart Meter IHD"
+MODEL: Final = "Glow IHD"
 
 # "+" matches every device
 DEFAULT_DEVICE_ID: Final = "+"

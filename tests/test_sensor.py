@@ -171,7 +171,7 @@ async def test_sensors(
         assert entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
     for unique_id_suffix, object_id, expected_state in EXPECTED_SENSORS:
         entity_id = _entity_id(hass, unique_id_suffix)
-        assert entity_id == f"sensor.glow_smart_meter_{DEVICE_ID.lower()}_{object_id}"
+        assert entity_id == f"sensor.glow_{DEVICE_ID.lower()}_{object_id}"
         state = hass.states.get(entity_id)
         assert state is not None
         assert state.state == expected_state, entity_id
@@ -182,9 +182,9 @@ async def test_sensors(
         config_entry.entry_id,
     )
     assert device is not None
-    assert device.name == f"Glow Smart Meter {DEVICE_ID}"
+    assert device.name == f"Glow {DEVICE_ID}"
     assert device.manufacturer == "Hildebrand Technology Limited"
-    assert device.model == "Glow Smart Meter IHD"
+    assert device.model == "Glow IHD"
 
 
 async def test_names(
@@ -198,7 +198,7 @@ async def test_names(
     state = hass.states.get(_entity_id(hass, "electricity_import"))
     assert state is not None
     assert state.attributes["friendly_name"] == (
-        f"Glow Smart Meter {DEVICE_ID} Electricity: Import"
+        f"Glow {DEVICE_ID} Electricity: Import"
     )
 
 
@@ -600,7 +600,7 @@ async def test_disabled_sensors(
 
     for unique_id_suffix, object_id, expected_state in DISABLED_SENSORS:
         entity_id = _entity_id(hass, unique_id_suffix)
-        assert entity_id == f"sensor.glow_smart_meter_{DEVICE_ID.lower()}_{object_id}"
+        assert entity_id == f"sensor.glow_{DEVICE_ID.lower()}_{object_id}"
         state = hass.states.get(entity_id)
         assert state is not None
         assert state.state == expected_state, entity_id
@@ -698,3 +698,30 @@ async def test_unknown_topic_not_warned(
     _publish(hass, f"glow/{DEVICE_ID}/SENSOR/other", "not json")
     await hass.async_block_till_done()
     assert "WARNING" not in [record.levelname for record in caplog.records]
+
+
+async def test_existing_device_renamed(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """Devices named by earlier versions get the name without "Smart Meter"."""
+    config_entry.add_to_hass(hass)
+    device_registry = dr.async_get(hass)
+    device_registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        connections={(dr.CONNECTION_NETWORK_MAC, DEVICE_ID)},
+        name=f"Glow Smart Meter {DEVICE_ID}",
+        model="Glow Smart Meter IHD",
+    )
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    await _publish_all(hass)
+
+    device = device_registry.async_get_device_by_connection(
+        (dr.CONNECTION_NETWORK_MAC, DEVICE_ID),
+        config_entry.entry_id,
+    )
+    assert device is not None
+    assert device.name == f"Glow {DEVICE_ID}"
+    assert device.model == "Glow IHD"

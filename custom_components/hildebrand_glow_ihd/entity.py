@@ -50,7 +50,7 @@ class GlowEntity(Entity):
             connections={(CONNECTION_NETWORK_MAC, device_id)},
             manufacturer=MANUFACTURER,
             model=MODEL,
-            name=f"Glow Smart Meter {device_id}",
+            name=f"Glow {device_id}",
             sw_version=software_version,
             hw_version=hardware_version,
         )

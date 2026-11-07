@@ -56,7 +56,7 @@ To add it yourself instead, go to **Settings → Devices & services → Add inte
 | Electricity meter time zone | Your HA time zone | The time zone your electricity meter's daily total resets in.                                                                                                                                                        |
 | Gas meter time zone         | Your HA time zone | The time zone your gas meter's daily total resets in. Some gas meters reset at midnight UTC (01:00 during British Summer Time). If yours does, choose `UTC`.                                                         |
 
-Each Glow device appears as a device named **Glow Smart Meter &lt;device id&gt;**, and its sensors appear as soon as the first MQTT message arrives.
+Each Glow device appears as a device named **Glow &lt;device id&gt;**, and its sensors appear as soon as the first MQTT message arrives.
 
 To change the time zones later, open the integration and select **Configure**. To change the device ID or topic prefix, open the entry's menu and select **Reconfigure**. The integration reloads to apply either.
 
@@ -64,7 +64,7 @@ You can add more than one entry, for example one per device, as long as two entr
 
 ## Sensors
 
-Home Assistant shows each sensor after its device's name, e.g. **Glow Smart Meter AABBCCDDEEFF Electricity: Import (Today)**, and new entity IDs look like `sensor.glow_smart_meter_aabbccddeeff_electricity_import_today`. Entity IDs of sensors you already have aren't changed.
+Home Assistant shows each sensor after its device's name, e.g. **Glow AABBCCDDEEFF Electricity: Import (Today)**, and new entity IDs look like `sensor.glow_aabbccddeeff_electricity_import_today`. Entity IDs of sensors you already have aren't changed. Devices added by earlier versions, named **Glow Smart Meter &lt;device id&gt;**, are renamed when the integration loads, unless you have renamed them yourself.
 
 ### Electricity
 
