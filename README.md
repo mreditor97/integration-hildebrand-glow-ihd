@@ -56,7 +56,7 @@ To add it yourself instead, go to **Settings → Devices & services → Add inte
 | Electricity meter time zone | Your HA time zone | The time zone your electricity meter's daily total resets in.                                                                                                                                                        |
 | Gas meter time zone         | Your HA time zone | The time zone your gas meter's daily total resets in. Some gas meters reset at midnight UTC (01:00 during British Summer Time). If yours does, choose `UTC`.                                                         |
 
-Each Glow device appears as a device named **Glow Smart Meter &lt;device id&gt;**, and its sensors appear as soon as the first MQTT message arrives.
+Each Glow device appears as a device named **Glow &lt;device id&gt;**, and its sensors appear as soon as the first MQTT message arrives.
 
 To change the time zones later, open the integration and select **Configure**. To change the device ID or topic prefix, open the entry's menu and select **Reconfigure**. The integration reloads to apply either.
 
@@ -64,7 +64,7 @@ You can add more than one entry, for example one per device, as long as two entr
 
 ## Sensors
 
-Home Assistant shows each sensor after its device's name, e.g. **Glow Smart Meter AABBCCDDEEFF Electricity: Import (Today)**, and new entity IDs look like `sensor.glow_smart_meter_aabbccddeeff_electricity_import_today`. Entity IDs of sensors you already have aren't changed.
+Home Assistant shows each sensor after its device's name, e.g. **Glow AABBCCDDEEFF Electricity: Import (Today)**, and new entity IDs are the device ID followed by the sensor, e.g. `sensor.aabbccddeeff_electricity_import_today`. Entity IDs of sensors you already have aren't changed. Devices added by earlier versions, named **Glow Smart Meter &lt;device id&gt;**, are renamed when the integration loads, unless you have renamed them yourself.
 
 ### Electricity
 
@@ -96,6 +96,11 @@ There is no live gas power sensor: the IHD stopped publishing gas power in softw
 
 IHD software version, hardware, HAN (Zigbee) status, HAN RSSI and HAN LQI. The device page also shows the IHD's software and hardware versions.
 
+These diagnostic sensors are off by default. Turn them on from the device page if you want them:
+
+- **IHD Zigbee Version** and **IHD SMETS Version**.
+- **Electricity: Last Reading** and **Gas: Last Reading**: when each meter last sent a reading, useful to spot a gas meter that has stopped reporting. They change with every message, so they add to the recorder's database when turned on.
+
 The unit rate and standing charge sensors are prices rather than running totals, so Home Assistant keeps their history but no long-term statistics. If you upgraded from a version before this change, **Developer tools → Statistics** may list them with a fix to remove their old statistics.
 
 ## Energy dashboard
@@ -114,6 +119,8 @@ The lifetime **Import** sensors give the most reliable statistics. The _Today_ s
 The Glow device pushes its readings to your MQTT broker, and the sensors update as each message arrives. Nothing is polled. How often readings arrive is up to the device and your meters: gas readings usually arrive much less often than electricity readings.
 
 If a device publishes nothing at all for 15 minutes, its sensors become unavailable until its next message, and a line is logged at info level each way.
+
+Bad data is logged without filling the log. A message whose payload isn't JSON is logged once as a warning per topic, then at debug level until a readable message arrives on that topic. A sensor that receives a value it can't use, such as text where a number is expected, shows unknown, and the value is logged once as a warning, then at debug level until a usable value arrives. Missing fields, such as prices before your supplier sends them, are logged at debug level only.
 
 ## Troubleshooting
 

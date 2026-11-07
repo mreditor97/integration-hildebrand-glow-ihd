@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta, tzinfo
+from math import isfinite
 from typing import Any
 
+from homeassistant.const import MAX_LENGTH_STATE_STATE
 from homeassistant.util.json import json_loads_object
 
 from .const import (
@@ -116,7 +118,11 @@ class GlowMessage:
 
 
 def payload_timestamp(payload: dict[str, Any]) -> datetime | None:
-    """Return the timestamp of a payload, or None if it has no valid one."""
+    """Return the timestamp of a payload, or None if it has no valid one.
+
+    The IHD sends its timestamps in UTC, so one without a time zone is read
+    as UTC.
+    """
     timestamp = payload.get("timestamp")
     for meter in ("electricitymeter", "gasmeter"):
         if timestamp:
@@ -125,9 +131,10 @@ def payload_timestamp(payload: dict[str, Any]) -> datetime | None:
         if isinstance(meter_data, dict):
             timestamp = meter_data.get("timestamp")
     try:
-        return datetime.fromisoformat(timestamp)  # type: ignore[arg-type]
+        parsed = datetime.fromisoformat(timestamp)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def parse_message(
@@ -163,6 +170,45 @@ def device_versions(payload: dict[str, Any]) -> tuple[str | None, str | None]:
         software if isinstance(software, str) else None,
         hardware if isinstance(hardware, str) else None,
     )
+
+
+class InvalidValueError(ValueError):
+    """A value from a payload can't be used as a sensor's state."""
+
+
+def validate_state_value(value: Any, *, numeric: bool, timestamp: bool) -> Any:
+    """Return a value from a payload if it can be a sensor's state.
+
+    Home Assistant raises an error on every state write for a numeric sensor
+    with a value that isn't a finite number, a timestamp sensor with a value
+    that isn't a time zone aware datetime, or a state longer than 255
+    characters. Raise InvalidValueError for those instead, so the sensor can
+    report unknown and log it once. None, a missing value, is always valid.
+    """
+    if value is None:
+        return None
+    if timestamp:
+        if isinstance(value, datetime) and value.tzinfo is not None:
+            return value
+        msg = f"{value!r} is not a time zone aware datetime"
+        raise InvalidValueError(msg)
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        msg = f"{value!r} is not a number or text"
+        raise InvalidValueError(msg)
+    if numeric:
+        try:
+            number = float(value)
+        except ValueError:
+            msg = f"{value!r} is not a number"
+            raise InvalidValueError(msg) from None
+        if not isfinite(number):
+            msg = f"{value!r} is not a finite number"
+            raise InvalidValueError(msg)
+        return number if isinstance(value, str) else value
+    if len(str(value)) > MAX_LENGTH_STATE_STATE:
+        msg = f"{value!r} is longer than {MAX_LENGTH_STATE_STATE} characters"
+        raise InvalidValueError(msg)
+    return value
 
 
 def calculate_cost_today(meter_data: dict[str, Any]) -> float | None:

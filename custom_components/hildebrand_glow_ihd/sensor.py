@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components import mqtt
 from homeassistant.components.sensor import (
+    DOMAIN as SENSOR_DOMAIN,
+)
+from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
@@ -37,13 +40,17 @@ from .const import (
 )
 from .entity import GlowEntity
 from .helpers import (
+    InvalidValueError,
     calculate_cost_today,
     determine_last_reset,
     device_versions,
     gas_volume,
     no_messages_issue_id,
     parse_message,
+    parse_topic,
+    payload_timestamp,
     subscription_topic,
+    validate_state_value,
 )
 from .models import GlowDeviceState
 
@@ -124,6 +131,22 @@ STATE_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda js: js["han"]["lqi"],
+    ),
+    GlowSensorEntityDescription(
+        key="zigbee_version",
+        translation_key="zigbee_version",
+        unique_id_name="IHD Zigbee Version",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda js: js["zigbee"],
+    ),
+    GlowSensorEntityDescription(
+        key="smets_version",
+        translation_key="smets_version",
+        unique_id_name="IHD SMETS Version",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda js: js["smetsversion"],
     ),
 )
 
@@ -214,6 +237,17 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         meter_interval=MeterInterval.DAY,
         value_fn=lambda js: calculate_cost_today(js["electricitymeter"]),
+    ),
+    # Changes with every message, so it is off by default to keep it out of
+    # the recorder unless it is wanted
+    GlowSensorEntityDescription(
+        key="electricity_last_reading",
+        translation_key="electricity_last_reading",
+        unique_id_name="Electricity: Last Reading",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=payload_timestamp,
     ),
 )
 
@@ -323,6 +357,16 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
         meter_interval=MeterInterval.DAY,
         value_fn=lambda js: calculate_cost_today(js["gasmeter"]),
     ),
+    # Shows how old the gas readings are, gas meters report less often
+    GlowSensorEntityDescription(
+        key="gas_last_reading",
+        translation_key="gas_last_reading",
+        unique_id_name="Gas: Last Reading",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=payload_timestamp,
+    ),
 )
 
 
@@ -392,6 +436,9 @@ class GlowMessageHandler:
         # The sensors of each device found so far, by the kind of message
         # that updates them
         self._sensors: dict[str, dict[TopicKind, list[GlowSensor]]] = {}
+        # The topics whose last payload couldn't be read, so a device that
+        # keeps sending bad payloads is logged once rather than every time
+        self._bad_payload_topics: set[str] = set()
 
     @callback
     def _async_add_device(
@@ -465,19 +512,20 @@ class GlowMessageHandler:
     def async_message_received(self, mqtt_message: ReceiveMessage) -> None:
         """Update a device's sensors from an MQTT message."""
         settings = self._settings
-        message = parse_message(
-            settings.topic_prefix,
-            mqtt_message.topic,
-            mqtt_message.payload,
-        )
+        topic = mqtt_message.topic
+        glow_topic = parse_topic(settings.topic_prefix, topic)
+        if glow_topic is None:
+            _LOGGER.debug("Ignored message on %s, it is not a Glow topic", topic)
+            return
+        if settings.device_id not in (DEFAULT_DEVICE_ID, glow_topic.device_id):
+            return
+        message = parse_message(settings.topic_prefix, topic, mqtt_message.payload)
         if message is None:
-            _LOGGER.debug(
-                "Ignored message on %s, it is not a Glow message",
-                mqtt_message.topic,
-            )
+            self._async_log_bad_payload(topic, mqtt_message.payload)
             return
-        if settings.device_id not in (DEFAULT_DEVICE_ID, message.device_id):
-            return
+        if topic in self._bad_payload_topics:
+            self._bad_payload_topics.discard(topic)
+            _LOGGER.info("Messages on %s can be read again", topic)
 
         _LOGGER.debug(
             "Received message on %s: %s",
@@ -497,6 +545,21 @@ class GlowMessageHandler:
             self._async_write_device_sensors(message.device_id)
         for sensor in sensors[message.kind]:
             sensor.async_process_message(message)
+
+    @callback
+    def _async_log_bad_payload(self, topic: str, payload: Any) -> None:
+        """Log a payload that isn't a JSON object, once until one is read."""
+        if topic in self._bad_payload_topics:
+            _LOGGER.debug("Ignored another unreadable payload on %s", topic)
+            return
+        self._bad_payload_topics.add(topic)
+        _LOGGER.warning(
+            "Ignored a message on %s, its payload isn't a JSON object: %.100r."
+            " Further unreadable messages on this topic are logged at debug"
+            " level until a readable one arrives",
+            topic,
+            payload,
+        )
 
     @callback
     def async_check_availability(self, now: datetime) -> None:
@@ -554,10 +617,57 @@ class GlowSensor(GlowEntity, SensorEntity):
             description.unique_id_name,
             device_state,
         )
+        # New sensors get entity IDs made of the device ID and the sensor,
+        # e.g. sensor.aabbccddeeff_electricity_import, without the device
+        # name in front. Sensors already in the entity registry keep theirs.
+        self.entity_id = f"{SENSOR_DOMAIN}.{self.unique_id}"
         self._time_zone = time_zone
         self._attr_native_value = None
+        # Whether an unusable value has been logged since the last good one
+        self._invalid_value_logged = False
+        self._numeric = bool(
+            description.native_unit_of_measurement
+            or description.state_class
+            or (
+                description.device_class is not None
+                and description.device_class is not SensorDeviceClass.TIMESTAMP
+            ),
+        )
         if description.meter_interval is not None:
             self._attr_last_reset = None
+
+    def _validated(self, value: Any) -> Any:
+        """Return a value if it can be the state, otherwise None.
+
+        An unusable value is logged as a warning once, then at debug level
+        until a usable one arrives, so a device that keeps sending it doesn't
+        fill the log.
+        """
+        try:
+            value = validate_state_value(
+                value,
+                numeric=self._numeric,
+                timestamp=(
+                    self.entity_description.device_class is SensorDeviceClass.TIMESTAMP
+                ),
+            )
+        except InvalidValueError as err:
+            if self._invalid_value_logged:
+                _LOGGER.debug("Unusable value for %s: %s", self.unique_id, err)
+            else:
+                self._invalid_value_logged = True
+                _LOGGER.warning(
+                    "Unusable value for %s: %s. Its state is unknown until a"
+                    " usable value arrives, and further unusable values are"
+                    " logged at debug level",
+                    self.unique_id,
+                    err,
+                )
+            return None
+        if value is not None and self._invalid_value_logged:
+            self._invalid_value_logged = False
+            _LOGGER.info("Usable values for %s again", self.unique_id)
+        return value
 
     @callback
     def async_process_message(self, message: GlowMessage) -> None:
@@ -565,7 +675,7 @@ class GlowSensor(GlowEntity, SensorEntity):
         description = self.entity_description
         try:
             value = description.value_fn(message.payload)
-        except (KeyError, IndexError, TypeError) as err:
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as err:
             # A field this sensor depends on is missing or null in the payload
             # (e.g. no tariff data from the supplier). Report the state as
             # unknown instead of raising, so the other sensors of the same
@@ -587,7 +697,7 @@ class GlowSensor(GlowEntity, SensorEntity):
                 self.unique_id,
             )
             value = None
-        self._attr_native_value = value
+        self._attr_native_value = self._validated(value)
 
         if (
             description.meter_interval is not None

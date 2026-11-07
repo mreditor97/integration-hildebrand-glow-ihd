@@ -16,6 +16,12 @@
       "han_lqi": {
         "default": "mdi:wifi-strength-outline"
       },
+      "zigbee_version": {
+        "default": "mdi:information-outline"
+      },
+      "smets_version": {
+        "default": "mdi:information-outline"
+      },
       "electricity_export": {
         "default": "mdi:flash"
       },
@@ -42,6 +48,9 @@
       },
       "electricity_cost_today": {
         "default": "mdi:cash"
+      },
+      "electricity_last_reading": {
+        "default": "mdi:clock-outline"
       },
       "gas_import": {
         "default": "mdi:fire"
@@ -75,6 +84,9 @@
       },
       "gas_cost_today": {
         "default": "mdi:cash"
+      },
+      "gas_last_reading": {
+        "default": "mdi:clock-outline"
       }
     }
   }
