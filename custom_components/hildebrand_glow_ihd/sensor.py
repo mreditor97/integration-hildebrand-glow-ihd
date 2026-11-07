@@ -21,20 +21,35 @@ from homeassistant.const import (
     UnitOfVolume,
 )
 from homeassistant.core import callback
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.util import dt as dt_util
 
-from .const import DEFAULT_DEVICE_ID, POWER_ERROR_VALUE, MeterInterval, TopicKind
+from .const import (
+    AVAILABILITY_CHECK_INTERVAL,
+    AVAILABILITY_TIMEOUT,
+    DEFAULT_DEVICE_ID,
+    DOMAIN,
+    POWER_ERROR_VALUE,
+    MeterInterval,
+    TopicKind,
+)
 from .entity import GlowEntity
 from .helpers import (
     calculate_cost_today,
     determine_last_reset,
+    device_versions,
     gas_volume,
+    no_messages_issue_id,
     parse_message,
     subscription_topic,
 )
+from .models import GlowDeviceState
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from datetime import tzinfo
+    from datetime import datetime, tzinfo
 
     from homeassistant.components.mqtt import ReceiveMessage
     from homeassistant.core import HomeAssistant
@@ -44,6 +59,9 @@ if TYPE_CHECKING:
     from .models import GlowConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
+
+# The sensors are updated from MQTT messages, nothing is polled
+PARALLEL_UPDATES = 0
 
 # Example payloads:
 # glow/XXXXXXYYYYYY/STATE                   {"software":"v1.8.12","timestamp":"2022-06-11T20:54:53Z","hardware":"GLOW-IHD-01-1v4-SMETS2","ethmac":"1234567890AB","smetsversion":"SMETS2","eui":"12:34:56:78:91:23:45","zigbee":"1.2.5","han":{"rssi":-75,"status":"joined","lqi":100}}  # noqa: E501
@@ -55,8 +73,8 @@ _LOGGER = logging.getLogger(__name__)
 class GlowSensorEntityDescription(SensorEntityDescription):
     """Describes a sensor read from a Glow MQTT payload."""
 
-    # The sensor's name before it was translated. Existing installs rely on
-    # the unique ID made from it, so it must not change.
+    # The sensor's name before it was translated, without its old "Smart
+    # Meter" prefix. The unique ID is made from it, so it must not change.
     unique_id_name: str
     value_fn: Callable[[dict[str, Any]], Any]
     # Keep the previous state when the IHD reports 0
@@ -71,28 +89,28 @@ STATE_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="software_version",
         translation_key="software_version",
-        unique_id_name="Smart Meter IHD Software Version",
+        unique_id_name="IHD Software Version",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda js: js["software"],
     ),
     GlowSensorEntityDescription(
         key="hardware",
         translation_key="hardware",
-        unique_id_name="Smart Meter IHD Hardware",
+        unique_id_name="IHD Hardware",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda js: js["hardware"],
     ),
     GlowSensorEntityDescription(
         key="han_status",
         translation_key="han_status",
-        unique_id_name="Smart Meter IHD HAN Status",
+        unique_id_name="IHD HAN Status",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda js: js["han"]["status"],
     ),
     GlowSensorEntityDescription(
         key="han_rssi",
         translation_key="han_rssi",
-        unique_id_name="Smart Meter IHD HAN RSSI",
+        unique_id_name="IHD HAN RSSI",
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
         native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS,
         state_class=SensorStateClass.MEASUREMENT,
@@ -102,7 +120,7 @@ STATE_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="han_lqi",
         translation_key="han_lqi",
-        unique_id_name="Smart Meter IHD HAN LQI",
+        unique_id_name="IHD HAN LQI",
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda js: js["han"]["lqi"],
@@ -113,7 +131,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_export",
         translation_key="electricity_export",
-        unique_id_name="Smart Meter Electricity: Export",
+        unique_id_name="Electricity: Export",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -122,7 +140,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_import",
         translation_key="electricity_import",
-        unique_id_name="Smart Meter Electricity: Import",
+        unique_id_name="Electricity: Import",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -132,7 +150,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_import_today",
         translation_key="electricity_import_today",
-        unique_id_name="Smart Meter Electricity: Import (Today)",
+        unique_id_name="Electricity: Import (Today)",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -141,7 +159,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_import_week",
         translation_key="electricity_import_week",
-        unique_id_name="Smart Meter Electricity: Import (This week)",
+        unique_id_name="Electricity: Import (This week)",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -150,7 +168,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_import_month",
         translation_key="electricity_import_month",
-        unique_id_name="Smart Meter Electricity: Import (This month)",
+        unique_id_name="Electricity: Import (This month)",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -159,10 +177,8 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_unit_rate",
         translation_key="electricity_unit_rate",
-        unique_id_name="Smart Meter Electricity: Import Unit Rate",
-        device_class=SensorDeviceClass.MONETARY,
+        unique_id_name="Electricity: Import Unit Rate",
         native_unit_of_measurement="GBP/kWh",
-        state_class=SensorStateClass.TOTAL,
         value_fn=lambda js: js["electricitymeter"]["energy"]["import"]["price"][
             "unitrate"
         ],
@@ -171,10 +187,9 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_standing_charge",
         translation_key="electricity_standing_charge",
-        unique_id_name="Smart Meter Electricity: Import Standing Charge",
+        unique_id_name="Electricity: Import Standing Charge",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
-        state_class=SensorStateClass.TOTAL,
         value_fn=lambda js: js["electricitymeter"]["energy"]["import"]["price"][
             "standingcharge"
         ],
@@ -183,7 +198,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_power",
         translation_key="electricity_power",
-        unique_id_name="Smart Meter Electricity: Power",
+        unique_id_name="Electricity: Power",
         device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         state_class=SensorStateClass.MEASUREMENT,
@@ -193,7 +208,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_cost_today",
         translation_key="electricity_cost_today",
-        unique_id_name="Smart Meter Electricity: Cost (Today)",
+        unique_id_name="Electricity: Cost (Today)",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
         state_class=SensorStateClass.TOTAL,
@@ -206,7 +221,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import",
         translation_key="gas_import",
-        unique_id_name="Smart Meter Gas: Import",
+        unique_id_name="Gas: Import",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -216,7 +231,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_volume",
         translation_key="gas_import_volume",
-        unique_id_name="Smart Meter Gas: Import Vol",
+        unique_id_name="Gas: Import Vol",
         device_class=SensorDeviceClass.GAS,
         native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -226,7 +241,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_volume_today",
         translation_key="gas_import_volume_today",
-        unique_id_name="Smart Meter Gas: Import Vol (Today)",
+        unique_id_name="Gas: Import Vol (Today)",
         device_class=SensorDeviceClass.GAS,
         native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -235,7 +250,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_volume_week",
         translation_key="gas_import_volume_week",
-        unique_id_name="Smart Meter Gas: Import Vol (This week)",
+        unique_id_name="Gas: Import Vol (This week)",
         device_class=SensorDeviceClass.GAS,
         native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -244,7 +259,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_volume_month",
         translation_key="gas_import_volume_month",
-        unique_id_name="Smart Meter Gas: Import Vol (This month)",
+        unique_id_name="Gas: Import Vol (This month)",
         device_class=SensorDeviceClass.GAS,
         native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -253,7 +268,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_today",
         translation_key="gas_import_today",
-        unique_id_name="Smart Meter Gas: Import (Today)",
+        unique_id_name="Gas: Import (Today)",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -262,7 +277,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_week",
         translation_key="gas_import_week",
-        unique_id_name="Smart Meter Gas: Import (This week)",
+        unique_id_name="Gas: Import (This week)",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -271,7 +286,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_month",
         translation_key="gas_import_month",
-        unique_id_name="Smart Meter Gas: Import (This month)",
+        unique_id_name="Gas: Import (This month)",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -280,20 +295,17 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_unit_rate",
         translation_key="gas_unit_rate",
-        unique_id_name="Smart Meter Gas: Import Unit Rate",
-        device_class=SensorDeviceClass.MONETARY,
+        unique_id_name="Gas: Import Unit Rate",
         native_unit_of_measurement="GBP/kWh",
-        state_class=SensorStateClass.TOTAL,
         value_fn=lambda js: js["gasmeter"]["energy"]["import"]["price"]["unitrate"],
         ignore_zero_values=True,
     ),
     GlowSensorEntityDescription(
         key="gas_standing_charge",
         translation_key="gas_standing_charge",
-        unique_id_name="Smart Meter Gas: Import Standing Charge",
+        unique_id_name="Gas: Import Standing Charge",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
-        state_class=SensorStateClass.TOTAL,
         value_fn=lambda js: js["gasmeter"]["energy"]["import"]["price"][
             "standingcharge"
         ],
@@ -304,7 +316,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_cost_today",
         translation_key="gas_cost_today",
-        unique_id_name="Smart Meter Gas: Cost (Today)",
+        unique_id_name="Gas: Cost (Today)",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
         state_class=SensorStateClass.TOTAL,
@@ -314,48 +326,145 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
 )
 
 
+DESCRIPTIONS_BY_KIND: dict[TopicKind, tuple[GlowSensorEntityDescription, ...]] = {
+    TopicKind.STATE: STATE_SENSORS,
+    TopicKind.ELECTRICITY_METER: ELECTRICITY_SENSORS,
+    TopicKind.GAS_METER: GAS_SENSORS,
+}
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: GlowConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Glow sensors, adding each device's when it first publishes."""
-    settings = entry.runtime_data
-    # The time zone each kind of message's resets are reported in
-    time_zones: dict[TopicKind, tzinfo | None] = {
-        TopicKind.STATE: None,
-        TopicKind.ELECTRICITY_METER: settings.time_zone_electricity,
-        TopicKind.GAS_METER: settings.time_zone_gas,
-    }
-    descriptions_by_kind: dict[TopicKind, tuple[GlowSensorEntityDescription, ...]] = {
-        TopicKind.STATE: STATE_SENSORS,
-        TopicKind.ELECTRICITY_METER: ELECTRICITY_SENSORS,
-        TopicKind.GAS_METER: GAS_SENSORS,
-    }
-    # The sensors of each device found so far, by the kind of message that
-    # updates them
-    devices: dict[str, dict[TopicKind, list[GlowSensor]]] = {}
+    handler = GlowMessageHandler(hass, entry, async_add_entities)
+    # Subscribe to one device's topics when one is set, otherwise to all
+    entry.async_on_unload(
+        await mqtt.async_subscribe(
+            hass,
+            handler.topic,
+            handler.async_message_received,
+            qos=1,
+        ),
+    )
+    entry.async_on_unload(
+        async_track_time_interval(
+            hass,
+            handler.async_check_availability,
+            AVAILABILITY_CHECK_INTERVAL,
+        ),
+    )
+    entry.async_on_unload(
+        async_call_later(
+            hass,
+            AVAILABILITY_TIMEOUT,
+            handler.async_raise_issue_if_nothing_heard,
+        ),
+    )
+
+
+class GlowMessageHandler:
+    """Create and update the sensors of the Glow devices an entry hears from."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: GlowConfigEntry,
+        async_add_entities: AddConfigEntryEntitiesCallback,
+    ) -> None:
+        """Initialise the handler."""
+        self._hass = hass
+        self._entry = entry
+        self._settings = entry.runtime_data
+        self._async_add_entities = async_add_entities
+        self.topic = subscription_topic(
+            self._settings.topic_prefix,
+            self._settings.device_id,
+        )
+        # The time zone each kind of message's resets are reported in
+        self._time_zones: dict[TopicKind, tzinfo | None] = {
+            TopicKind.STATE: None,
+            TopicKind.ELECTRICITY_METER: self._settings.time_zone_electricity,
+            TopicKind.GAS_METER: self._settings.time_zone_gas,
+        }
+        # The sensors of each device found so far, by the kind of message
+        # that updates them
+        self._sensors: dict[str, dict[TopicKind, list[GlowSensor]]] = {}
 
     @callback
-    def async_add_device(device_id: str) -> dict[TopicKind, list[GlowSensor]]:
+    def _async_add_device(
+        self,
+        message: GlowMessage,
+    ) -> dict[TopicKind, list[GlowSensor]]:
         """Add the sensors of a newly found device."""
+        device_id = message.device_id
         _LOGGER.debug("New Glow device found: %s", device_id)
+        device_state = GlowDeviceState(
+            last_seen=dt_util.utcnow(),
+            payloads={message.kind: message.payload},
+        )
+        self._settings.devices[device_id] = device_state
         sensors = {
             kind: [
-                GlowSensor(device_id, description, time_zones[kind])
+                GlowSensor(device_id, description, self._time_zones[kind], device_state)
                 for description in descriptions
             ]
-            for kind, descriptions in descriptions_by_kind.items()
+            for kind, descriptions in DESCRIPTIONS_BY_KIND.items()
         }
-        async_add_entities(
+        self._async_add_entities(
             sensor for kind_sensors in sensors.values() for sensor in kind_sensors
         )
-        devices[device_id] = sensors
+        self._sensors[device_id] = sensors
+        # Hearing from a device means the topic settings are right
+        ir.async_delete_issue(
+            self._hass,
+            DOMAIN,
+            no_messages_issue_id(self._entry.entry_id),
+        )
         return sensors
 
     @callback
-    def async_message_received(mqtt_message: ReceiveMessage) -> None:
+    def _async_write_device_sensors(self, device_id: str) -> None:
+        """Write the state of every sensor of a device."""
+        for kind_sensors in self._sensors[device_id].values():
+            for sensor in kind_sensors:
+                sensor.async_write_state_if_added()
+
+    @callback
+    def _async_update_device_versions(self, message: GlowMessage) -> None:
+        """Show a device's software and hardware versions on its device page."""
+        software, hardware = device_versions(message.payload)
+        device_registry = dr.async_get(self._hass)
+        # Looked up by the entry's devices, as async_get_device_by_connection
+        # is newer than the oldest Home Assistant version supported
+        connection = (dr.CONNECTION_NETWORK_MAC, dr.format_mac(message.device_id))
+        device = next(
+            (
+                device
+                for device in dr.async_entries_for_config_entry(
+                    device_registry,
+                    self._entry.entry_id,
+                )
+                if connection in device.connections
+            ),
+            None,
+        )
+        if device is None:
+            # Not registered yet, the sensors' device info will set them
+            return
+        if (device.sw_version, device.hw_version) != (software, hardware):
+            device_registry.async_update_device(
+                device.id,
+                sw_version=software,
+                hw_version=hardware,
+            )
+
+    @callback
+    def async_message_received(self, mqtt_message: ReceiveMessage) -> None:
         """Update a device's sensors from an MQTT message."""
+        settings = self._settings
         message = parse_message(
             settings.topic_prefix,
             mqtt_message.topic,
@@ -375,21 +484,55 @@ async def async_setup_entry(
             mqtt_message.topic,
             mqtt_message.payload,
         )
-        sensors = devices.get(message.device_id) or async_add_device(
-            message.device_id,
-        )
+        if (sensors := self._sensors.get(message.device_id)) is None:
+            sensors = self._async_add_device(message)
+        device_state = settings.devices[message.device_id]
+        device_state.last_seen = dt_util.utcnow()
+        device_state.payloads[message.kind] = message.payload
+        if message.kind is TopicKind.STATE:
+            self._async_update_device_versions(message)
+        if not device_state.available:
+            _LOGGER.info("Glow device %s is publishing again", message.device_id)
+            device_state.available = True
+            self._async_write_device_sensors(message.device_id)
         for sensor in sensors[message.kind]:
             sensor.async_process_message(message)
 
-    # Subscribe to one device's topics when one is set, otherwise to all
-    entry.async_on_unload(
-        await mqtt.async_subscribe(
-            hass,
-            subscription_topic(settings.topic_prefix, settings.device_id),
-            async_message_received,
-            qos=1,
-        ),
-    )
+    @callback
+    def async_check_availability(self, now: datetime) -> None:
+        """Mark the sensors of devices that have stopped publishing unavailable."""
+        for device_id, device_state in self._settings.devices.items():
+            if (
+                device_state.available
+                and now - device_state.last_seen > AVAILABILITY_TIMEOUT
+            ):
+                _LOGGER.info(
+                    "Glow device %s hasn't published for %s, its sensors are"
+                    " unavailable until it does",
+                    device_id,
+                    AVAILABILITY_TIMEOUT,
+                )
+                device_state.available = False
+                self._async_write_device_sensors(device_id)
+
+    @callback
+    def async_raise_issue_if_nothing_heard(self, _now: datetime) -> None:
+        """Raise a repair issue if no device has published since setup."""
+        if self._settings.devices:
+            return
+        ir.async_create_issue(
+            self._hass,
+            DOMAIN,
+            no_messages_issue_id(self._entry.entry_id),
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="no_messages",
+            translation_placeholders={
+                "title": self._entry.title,
+                "topic": self.topic,
+                "minutes": str(int(AVAILABILITY_TIMEOUT.total_seconds() // 60)),
+            },
+        )
 
 
 class GlowSensor(GlowEntity, SensorEntity):
@@ -402,9 +545,15 @@ class GlowSensor(GlowEntity, SensorEntity):
         device_id: str,
         description: GlowSensorEntityDescription,
         time_zone: tzinfo | None,
+        device_state: GlowDeviceState,
     ) -> None:
         """Initialise the sensor."""
-        super().__init__(device_id, description, description.unique_id_name)
+        super().__init__(
+            device_id,
+            description,
+            description.unique_id_name,
+            device_state,
+        )
         self._time_zone = time_zone
         self._attr_native_value = None
         if description.meter_interval is not None:

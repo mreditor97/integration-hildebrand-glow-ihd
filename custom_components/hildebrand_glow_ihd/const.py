@@ -1,5 +1,6 @@
 """Constants for the Home Assistant Hildebrand Glow IHD Integration."""
 
+from datetime import timedelta
 from enum import StrEnum
 from typing import Final
 
@@ -23,6 +24,13 @@ MODEL: Final = "Glow Smart Meter IHD"
 # "+" matches every device
 DEFAULT_DEVICE_ID: Final = "+"
 DEFAULT_TOPIC_PREFIX: Final = "glow"
+
+# A device's sensors become unavailable when it hasn't published anything for
+# this long. Any message counts, because gas readings can be much less frequent
+# than electricity readings.
+AVAILABILITY_TIMEOUT: Final = timedelta(minutes=15)
+# How often to check whether devices have stopped publishing
+AVAILABILITY_CHECK_INTERVAL: Final = timedelta(minutes=1)
 
 # The IHD reports this power value when it can't read the meter
 POWER_ERROR_VALUE: Final = -8388.608

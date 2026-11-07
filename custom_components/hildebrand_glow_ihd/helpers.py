@@ -30,6 +30,11 @@ def entry_title(device_id: str | None) -> str:
     return f"{DEFAULT_TITLE} ({device_id})"
 
 
+def no_messages_issue_id(entry_id: str) -> str:
+    """Return the ID of the repair issue raised when an entry hears nothing."""
+    return f"no_messages_{entry_id}"
+
+
 @dataclass(frozen=True, slots=True)
 class GlowTopic:
     """The device and kind of message an MQTT topic is for."""
@@ -52,6 +57,27 @@ def normalize_topic_prefix(topic_prefix: str | None) -> str:
     """Return a topic prefix with wildcards, spaces and slashes removed."""
     normalized = (topic_prefix or "").strip().replace("#", "").replace(" ", "")
     return normalized.strip("/") or DEFAULT_TOPIC_PREFIX
+
+
+def settings_overlap(
+    topic_prefix: str,
+    device_id: str,
+    other_topic_prefix: str,
+    other_device_id: str,
+) -> bool:
+    """Return whether two entries' settings would pick up the same device.
+
+    The settings are expected to be normalised. Two entries for the same
+    device would create sensors with the same unique IDs, and Home Assistant
+    would refuse the second set. The sensors' unique IDs don't include the
+    topic prefix, so the same device ID clashes under any prefix.
+    """
+    if device_id == other_device_id:
+        return True
+    return topic_prefix == other_topic_prefix and DEFAULT_DEVICE_ID in (
+        device_id,
+        other_device_id,
+    )
 
 
 def subscription_topic(topic_prefix: str, device_id: str) -> str:
@@ -126,6 +152,16 @@ def parse_message(
         kind=glow_topic.kind,
         payload=data,
         timestamp=payload_timestamp(data),
+    )
+
+
+def device_versions(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Return the software and hardware versions from a STATE payload."""
+    software = payload.get("software")
+    hardware = payload.get("hardware")
+    return (
+        software if isinstance(software, str) else None,
+        hardware if isinstance(hardware, str) else None,
     )
 
 
