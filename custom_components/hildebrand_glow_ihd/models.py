@@ -32,6 +32,8 @@ class GlowDeviceState:
     # The device's name, which new entity IDs are made from
     name: str
     last_seen: datetime
+    # Whether the name was given at setup, rather than made from the ID
+    named: bool = False
     available: bool = True
     # The latest payload of each kind of message, for diagnostics
     payloads: dict[TopicKind, dict[str, Any]] = field(default_factory=dict)

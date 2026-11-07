@@ -67,7 +67,7 @@ You can add more than one entry, for example one per device, as long as two entr
 
 ## Sensors
 
-Home Assistant shows each sensor after its device's name, e.g. **Home Electricity: Import (Today)** for a device named `Home`, and new entity IDs start with the name, e.g. `sensor.home_electricity_import_today`. Entity IDs of sensors you already have aren't changed. Entries added before setup asked for a name keep the device name **Glow &lt;device id&gt;**. Give them a name with **Reconfigure**.
+Home Assistant shows each sensor after its device's name, e.g. **Home Electricity: Import (Today)** for a device named `Home`, and new entity IDs start with the name, e.g. `sensor.home_electricity_import_today`. Entity IDs of sensors you already have aren't changed, except IDs made only of the device ID and the sensor, such as `sensor.aabbccddeeff_electricity_import`, which a short-lived earlier version gave. Those are renamed to start with the name when the integration loads. Entries added before setup asked for a name keep the device name **Glow &lt;device id&gt;**. Give them a name with **Reconfigure**.
 
 ### Electricity
 

@@ -449,6 +449,7 @@ class GlowMessageHandler:
         device_state = GlowDeviceState(
             # Entries made before setup asked for a name keep the old one
             name=self._settings.name or f"{DEFAULT_NAME} {device_id}",
+            named=self._settings.name is not None,
             last_seen=dt_util.utcnow(),
             payloads={message.kind: message.payload},
         )

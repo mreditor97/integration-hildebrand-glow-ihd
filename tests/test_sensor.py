@@ -749,3 +749,104 @@ async def test_entry_without_name_keeps_old_device_name(
         _entity_id(hass, "electricity_import")
         == f"sensor.glow_{DEVICE_ID.lower()}_electricity_import"
     )
+
+
+@pytest.mark.parametrize(
+    ("old_entity_id", "expected_entity_id"),
+    [
+        # Made from the unique ID by an earlier version, renamed
+        (
+            f"sensor.{DEVICE_ID.lower()}_electricity_import",
+            "sensor.home_electricity_import",
+        ),
+        # Changed by the user, left alone
+        ("sensor.my_meter", "sensor.my_meter"),
+    ],
+)
+async def test_device_id_entity_ids_renamed(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+    old_entity_id: str,
+    expected_entity_id: str,
+) -> None:
+    """Entity IDs made from the device ID get the name given at setup."""
+    config_entry.add_to_hass(hass)
+    entity_registry = er.async_get(hass)
+    entity_registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        f"{DEVICE_ID.lower()}_electricity_import",
+        suggested_object_id=old_entity_id.removeprefix("sensor."),
+        config_entry=config_entry,
+    )
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    await _publish_all(hass)
+    await hass.async_block_till_done()
+
+    assert _entity_id(hass, "electricity_import") == expected_entity_id
+    state = hass.states.get(expected_entity_id)
+    assert state is not None
+    assert state.state == "6613.405"
+    if old_entity_id != expected_entity_id:
+        assert hass.states.get(old_entity_id) is None
+
+
+async def test_device_id_entity_id_kept_without_name(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+) -> None:
+    """Entries without a name keep entity IDs made from the device ID."""
+    data = {key: value for key, value in ENTRY_DATA.items() if key != "name"}
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=f"{DOMAIN}_+",
+        data=data,
+        minor_version=3,
+    )
+    entry.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        DOMAIN,
+        f"{DEVICE_ID.lower()}_electricity_import",
+        suggested_object_id=f"{DEVICE_ID.lower()}_electricity_import",
+        config_entry=entry,
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await _publish_all(hass)
+    assert (
+        _entity_id(hass, "electricity_import")
+        == f"sensor.{DEVICE_ID.lower()}_electricity_import"
+    )
+
+
+async def test_rename_skipped_when_taken(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """An entity ID isn't renamed onto one another entity already has."""
+    config_entry.add_to_hass(hass)
+    entity_registry = er.async_get(hass)
+    entity_registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        f"{DEVICE_ID.lower()}_electricity_import",
+        suggested_object_id=f"{DEVICE_ID.lower()}_electricity_import",
+        config_entry=config_entry,
+    )
+    entity_registry.async_get_or_create(
+        "sensor",
+        "other",
+        "taken",
+        suggested_object_id="home_electricity_import",
+    )
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    await _publish_all(hass)
+    assert (
+        _entity_id(hass, "electricity_import")
+        == f"sensor.{DEVICE_ID.lower()}_electricity_import"
+    )
