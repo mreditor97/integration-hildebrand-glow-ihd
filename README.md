@@ -180,6 +180,8 @@ actions:
 
 The Glow device pushes its readings to your MQTT broker, and the sensors update as each message arrives. Nothing is polled. How often readings arrive is up to the device and your meters: gas readings usually arrive much less often than electricity readings.
 
+After a restart or reload, each sensor is unavailable until its first reading arrives, rather than unknown, so helpers such as Utility Meter don't log warnings while they wait. Gas sensors can take longest.
+
 If a device publishes nothing at all for 15 minutes, its sensors become unavailable until its next message, and a line is logged at info level each way.
 
 Bad data is logged without filling the log. A message whose payload isn't JSON is logged once as a warning per topic, then at debug level until a readable message arrives on that topic. A sensor that receives a value it can't use, such as text where a number is expected, shows unknown, and the value is logged once as a warning, then at debug level until a usable value arrives. Missing fields, such as prices before your supplier sends them, are logged at debug level only.

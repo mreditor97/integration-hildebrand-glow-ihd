@@ -620,6 +620,11 @@ class GlowSensor(GlowEntity, SensorEntity):
         )
         self._time_zone = time_zone
         self._attr_native_value = None
+        # Whether a message has updated the sensor yet. Until one has, the
+        # sensor has no reading and is unavailable rather than unknown, so
+        # helpers like Utility Meter don't warn about an invalid state while
+        # they wait for, say, the first gas message after a restart.
+        self._has_reading = False
         # Whether an unusable value has been logged since the last good one
         self._invalid_value_logged = False
         self._numeric = bool(
@@ -632,6 +637,11 @@ class GlowSensor(GlowEntity, SensorEntity):
         )
         if description.meter_interval is not None:
             self._attr_last_reset = None
+
+    @property
+    def available(self) -> bool:
+        """Return whether the device is publishing and has sent this reading."""
+        return super().available and self._has_reading
 
     def _validated(self, value: Any) -> Any:
         """Return a value if it can be the state, otherwise None.
@@ -707,4 +717,5 @@ class GlowSensor(GlowEntity, SensorEntity):
                 description.meter_interval,
             )
 
+        self._has_reading = True
         self.async_write_state_if_added()

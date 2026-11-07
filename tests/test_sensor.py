@@ -850,3 +850,31 @@ async def test_rename_skipped_when_taken(
         _entity_id(hass, "electricity_import")
         == f"sensor.{DEVICE_ID.lower()}_electricity_import"
     )
+
+
+async def test_unavailable_until_first_reading(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """Sensors without a reading yet are unavailable, not unknown."""
+    await _setup(hass, config_entry)
+    _publish(hass, STATE_TOPIC, STATE_PAYLOAD)
+    await hass.async_block_till_done()
+
+    hardware = hass.states.get(_entity_id(hass, "ihd_hardware"))
+    assert hardware is not None
+    assert hardware.state == "GLOW-IHD-01-1v4-SMETS2"
+    cost = hass.states.get(_entity_id(hass, "electricity_cost_today"))
+    assert cost is not None
+    assert cost.state == STATE_UNAVAILABLE
+
+    _publish(hass, ELECTRICITY_TOPIC, ELECTRICITY_PAYLOAD)
+    await hass.async_block_till_done()
+    cost = hass.states.get(_entity_id(hass, "electricity_cost_today"))
+    assert cost is not None
+    assert cost.state == "0.9"
+    # Gas hasn't reported yet
+    gas = hass.states.get(_entity_id(hass, "gas_import"))
+    assert gas is not None
+    assert gas.state == STATE_UNAVAILABLE
