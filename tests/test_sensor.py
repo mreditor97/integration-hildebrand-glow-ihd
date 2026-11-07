@@ -99,6 +99,20 @@ EXPECTED_SENSORS: list[tuple[str, str, str]] = [
 ]
 
 
+# The sensors that are disabled by default, with their entity ID suffix and
+# state for the test payloads
+DISABLED_SENSORS: list[tuple[str, str, str]] = [
+    ("ihd_zigbee_version", "ihd_zigbee_version", "1.2.5"),
+    ("ihd_smets_version", "ihd_smets_version", "SMETS2"),
+    (
+        "electricity_last_reading",
+        "electricity_last_reading",
+        "2022-06-11T23:38:00+00:00",
+    ),
+    ("gas_last_reading", "gas_last_reading", "2022-06-11T20:53:52+00:00"),
+]
+
+
 async def _setup(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     """Set up a config entry."""
     entry.add_to_hass(hass)
@@ -150,7 +164,11 @@ async def test_sensors(
         entity_registry,
         config_entry.entry_id,
     )
-    assert len(entries) == len(EXPECTED_SENSORS)
+    assert len(entries) == len(EXPECTED_SENSORS) + len(DISABLED_SENSORS)
+    for unique_id_suffix, _, _ in DISABLED_SENSORS:
+        entry = entity_registry.async_get(_entity_id(hass, unique_id_suffix))
+        assert entry is not None
+        assert entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
     for unique_id_suffix, object_id, expected_state in EXPECTED_SENSORS:
         entity_id = _entity_id(hass, unique_id_suffix)
         assert entity_id == f"sensor.glow_smart_meter_{DEVICE_ID.lower()}_{object_id}"
@@ -335,6 +353,8 @@ async def test_existing_entity_id_kept(
         er.async_entries_for_config_entry(entity_registry, entry.entry_id),
     ) == len(
         EXPECTED_SENSORS,
+    ) + len(
+        DISABLED_SENSORS,
     )
 
 
@@ -558,3 +578,123 @@ async def test_no_repair_issue_when_heard(
         DOMAIN,
         f"no_messages_{config_entry.entry_id}",
     )
+
+
+async def test_disabled_sensors(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """The sensors that are off by default report their values once enabled."""
+    await _setup(hass, config_entry)
+    await _publish_all(hass)
+    entity_registry = er.async_get(hass)
+    for unique_id_suffix, _, _ in DISABLED_SENSORS:
+        entity_registry.async_update_entity(
+            _entity_id(hass, unique_id_suffix),
+            disabled_by=None,
+        )
+    assert await hass.config_entries.async_reload(config_entry.entry_id)
+    await hass.async_block_till_done()
+    await _publish_all(hass)
+
+    for unique_id_suffix, object_id, expected_state in DISABLED_SENSORS:
+        entity_id = _entity_id(hass, unique_id_suffix)
+        assert entity_id == f"sensor.glow_smart_meter_{DEVICE_ID.lower()}_{object_id}"
+        state = hass.states.get(entity_id)
+        assert state is not None
+        assert state.state == expected_state, entity_id
+
+
+@pytest.mark.parametrize("bad_value", ["not a number", "nan", True, [1], {"a": 1}])
+async def test_unusable_value_logged_once(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+    caplog: pytest.LogCaptureFixture,
+    bad_value: Any,
+) -> None:
+    """An unusable value makes the sensor unknown, and is warned about once."""
+    await _setup(hass, config_entry)
+    await _publish_all(hass)
+    entity_id = _entity_id(hass, "electricity_power")
+
+    payload = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    payload["electricitymeter"]["power"]["value"] = bad_value
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.state == STATE_UNKNOWN
+    warnings = [
+        record
+        for record in caplog.records
+        if record.levelname == "WARNING" and "Unusable value" in record.message
+    ]
+    assert len(warnings) == 1
+    # The other sensors of the message are still updated
+    imported = hass.states.get(_entity_id(hass, "electricity_import"))
+    assert imported is not None
+    assert imported.state == "6613.405"
+
+    _publish(hass, ELECTRICITY_TOPIC, ELECTRICITY_PAYLOAD)
+    await hass.async_block_till_done()
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.state == "0.951"
+    assert "Usable values for" in caplog.text
+
+
+async def test_numeric_text_is_used(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """A number sent as text is used as the number."""
+    await _setup(hass, config_entry)
+    payload = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    payload["electricitymeter"]["power"]["value"] = "1.5"
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+    state = hass.states.get(_entity_id(hass, "electricity_power"))
+    assert state is not None
+    assert state.state == "1.5"
+
+
+async def test_unreadable_payload_logged_once(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A topic that keeps sending unreadable payloads is warned about once."""
+    await _setup(hass, config_entry)
+    for _ in range(3):
+        _publish(hass, STATE_TOPIC, "not json")
+    await hass.async_block_till_done()
+    warnings = [
+        record
+        for record in caplog.records
+        if record.levelname == "WARNING" and "isn't a JSON object" in record.message
+    ]
+    assert len(warnings) == 1
+    assert not hass.states.async_all("sensor")
+
+    _publish(hass, STATE_TOPIC, STATE_PAYLOAD)
+    await hass.async_block_till_done()
+    assert f"Messages on {STATE_TOPIC} can be read again" in caplog.text
+
+
+async def test_unknown_topic_not_warned(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Messages on topics the integration doesn't use aren't warned about."""
+    await _setup(hass, config_entry)
+    _publish(hass, f"glow/{DEVICE_ID}/SENSOR/other", "not json")
+    await hass.async_block_till_done()
+    assert "WARNING" not in [record.levelname for record in caplog.records]

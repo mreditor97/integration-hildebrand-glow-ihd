@@ -10,6 +10,7 @@ import pytest
 from custom_components.hildebrand_glow_ihd.const import MeterInterval, TopicKind
 from custom_components.hildebrand_glow_ihd.helpers import (
     GlowTopic,
+    InvalidValueError,
     calculate_cost_today,
     determine_last_reset,
     entry_title,
@@ -20,6 +21,7 @@ from custom_components.hildebrand_glow_ihd.helpers import (
     parse_topic,
     payload_timestamp,
     subscription_topic,
+    validate_state_value,
 )
 from tests.const import ELECTRICITY_PAYLOAD, GAS_PAYLOAD, STATE_PAYLOAD
 
@@ -270,3 +272,69 @@ def test_determine_last_reset(
 ) -> None:
     """The last reset is the start of the interval in the meter's time zone."""
     assert determine_last_reset(message_time, time_zone, interval) == expected
+
+
+def test_payload_timestamp_without_time_zone_is_utc() -> None:
+    """The IHD's timestamps are in UTC, even without a time zone."""
+    assert payload_timestamp({"timestamp": "2022-06-11T20:54:53"}) == datetime(
+        2022,
+        6,
+        11,
+        20,
+        54,
+        53,
+        tzinfo=UTC,
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "numeric", "timestamp", "expected"),
+    [
+        (None, True, False, None),
+        (1, True, False, 1),
+        (0.5, True, False, 0.5),
+        ("1.5", True, False, 1.5),
+        ("joined", False, False, "joined"),
+        (100, False, False, 100),
+        (
+            datetime(2022, 6, 11, tzinfo=UTC),
+            False,
+            True,
+            datetime(2022, 6, 11, tzinfo=UTC),
+        ),
+    ],
+)
+def test_validate_state_value(
+    value: Any,
+    numeric: bool,  # noqa: FBT001
+    timestamp: bool,  # noqa: FBT001
+    expected: Any,
+) -> None:
+    """Values that can be a sensor's state are returned."""
+    assert validate_state_value(value, numeric=numeric, timestamp=timestamp) == (
+        expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "numeric", "timestamp"),
+    [
+        ("abc", True, False),
+        ("inf", True, False),
+        (float("nan"), True, False),
+        (True, True, False),
+        ([1], False, False),
+        ({"a": 1}, False, False),
+        ("x" * 256, False, False),
+        (datetime(2022, 6, 11), False, True),  # noqa: DTZ001
+        ("2022-06-11T00:00:00Z", False, True),
+    ],
+)
+def test_validate_state_value_invalid(
+    value: Any,
+    numeric: bool,  # noqa: FBT001
+    timestamp: bool,  # noqa: FBT001
+) -> None:
+    """Values that can't be a sensor's state raise InvalidValueError."""
+    with pytest.raises(InvalidValueError):
+        validate_state_value(value, numeric=numeric, timestamp=timestamp)

@@ -96,6 +96,12 @@
       "han_lqi": {
         "name": "IHD HAN LQI"
       },
+      "zigbee_version": {
+        "name": "IHD Zigbee Version"
+      },
+      "smets_version": {
+        "name": "IHD SMETS Version"
+      },
       "electricity_export": {
         "name": "Electricity: Export"
       },
@@ -122,6 +128,9 @@
       },
       "electricity_cost_today": {
         "name": "Electricity: Cost (Today)"
+      },
+      "electricity_last_reading": {
+        "name": "Electricity: Last Reading"
       },
       "gas_import": {
         "name": "Gas: Import"
@@ -155,6 +164,9 @@
       },
       "gas_cost_today": {
         "name": "Gas: Cost (Today)"
+      },
+      "gas_last_reading": {
+        "name": "Gas: Last Reading"
       }
     }
   }

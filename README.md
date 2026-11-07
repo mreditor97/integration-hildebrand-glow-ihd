@@ -96,6 +96,11 @@ There is no live gas power sensor: the IHD stopped publishing gas power in softw
 
 IHD software version, hardware, HAN (Zigbee) status, HAN RSSI and HAN LQI. The device page also shows the IHD's software and hardware versions.
 
+These diagnostic sensors are off by default. Turn them on from the device page if you want them:
+
+- **IHD Zigbee Version** and **IHD SMETS Version**.
+- **Electricity: Last Reading** and **Gas: Last Reading**: when each meter last sent a reading, useful to spot a gas meter that has stopped reporting. They change with every message, so they add to the recorder's database when turned on.
+
 The unit rate and standing charge sensors are prices rather than running totals, so Home Assistant keeps their history but no long-term statistics. If you upgraded from a version before this change, **Developer tools → Statistics** may list them with a fix to remove their old statistics.
 
 ## Energy dashboard
@@ -114,6 +119,8 @@ The lifetime **Import** sensors give the most reliable statistics. The _Today_ s
 The Glow device pushes its readings to your MQTT broker, and the sensors update as each message arrives. Nothing is polled. How often readings arrive is up to the device and your meters: gas readings usually arrive much less often than electricity readings.
 
 If a device publishes nothing at all for 15 minutes, its sensors become unavailable until its next message, and a line is logged at info level each way.
+
+Bad data is logged without filling the log. A message whose payload isn't JSON is logged once as a warning per topic, then at debug level until a readable message arrives on that topic. A sensor that receives a value it can't use, such as text where a number is expected, shows unknown, and the value is logged once as a warning, then at debug level until a usable value arrives. Missing fields, such as prices before your supplier sends them, are logged at debug level only.
 
 ## Troubleshooting
 
