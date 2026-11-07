@@ -171,7 +171,7 @@ async def test_sensors(
         assert entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
     for unique_id_suffix, object_id, expected_state in EXPECTED_SENSORS:
         entity_id = _entity_id(hass, unique_id_suffix)
-        assert entity_id == f"sensor.glow_{DEVICE_ID.lower()}_{object_id}"
+        assert entity_id == f"sensor.{DEVICE_ID.lower()}_{object_id}"
         state = hass.states.get(entity_id)
         assert state is not None
         assert state.state == expected_state, entity_id
@@ -600,7 +600,7 @@ async def test_disabled_sensors(
 
     for unique_id_suffix, object_id, expected_state in DISABLED_SENSORS:
         entity_id = _entity_id(hass, unique_id_suffix)
-        assert entity_id == f"sensor.glow_{DEVICE_ID.lower()}_{object_id}"
+        assert entity_id == f"sensor.{DEVICE_ID.lower()}_{object_id}"
         state = hass.states.get(entity_id)
         assert state is not None
         assert state.state == expected_state, entity_id
