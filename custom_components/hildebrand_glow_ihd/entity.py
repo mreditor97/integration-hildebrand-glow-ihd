@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from homeassistant.const import ATTR_DEVICE_ID
+from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo
 from homeassistant.helpers.entity import Entity
 from homeassistant.util import slugify
@@ -16,6 +19,9 @@ if TYPE_CHECKING:
     from homeassistant.helpers.entity import EntityDescription
 
     from .models import GlowDeviceState
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class GlowEntity(Entity):
@@ -65,6 +71,43 @@ class GlowEntity(Entity):
         """Start writing state updates once the entity is added."""
         await super().async_added_to_hass()
         self._added = True
+        self._async_rename_device_id_entity_id()
+
+    @callback
+    def _async_rename_device_id_entity_id(self) -> None:
+        """Give an entity ID made from the device ID one made from the name.
+
+        An earlier version briefly gave new sensors entity IDs made of their unique
+        ID, e.g. sensor.aabbccddeeff_electricity_import. Home Assistant gives
+        a re-added entity its old entity ID back, so deleting and re-adding
+        the integration doesn't change them. Rename those to start with the
+        name given at setup, the way new entity IDs are made. Entity IDs the
+        user has changed don't have this form, so they are left alone.
+        """
+        if (
+            not self._device_state.named
+            or self.registry_entry is None
+            or self.entity_id != f"{self.platform.domain}.{self.unique_id}"
+            or not isinstance(self.name, str)
+        ):
+            return
+        object_id = slugify(f"{self._device_state.name} {self.name}")
+        new_entity_id = f"{self.platform.domain}.{object_id}"
+        entity_registry = er.async_get(self.hass)
+        if entity_registry.async_get(new_entity_id) or self.hass.states.get(
+            new_entity_id,
+        ):
+            _LOGGER.debug(
+                "Can't rename %s to %s, the new entity ID is taken",
+                self.entity_id,
+                new_entity_id,
+            )
+            return
+        _LOGGER.info("Renaming %s to %s", self.entity_id, new_entity_id)
+        entity_registry.async_update_entity(
+            self.entity_id,
+            new_entity_id=new_entity_id,
+        )
 
     async def async_will_remove_from_hass(self) -> None:
         """Stop writing state updates when the entity is removed."""
