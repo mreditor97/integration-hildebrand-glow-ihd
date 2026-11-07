@@ -18,19 +18,29 @@ Repository = "https://github.com/mreditor97/integration-hildebrand-glow-ihd"
 Changelog = "https://github.com/mreditor97/integration-hildebrand-glow-ihd/releases"
 
 [dependency-groups]
-dev = [
+# Linters and formatters, which don't need Home Assistant installed. CI's lint
+# jobs install only this group, skipping Home Assistant and its dependencies
+lint = [
   "black==26.10.1",
   "blacken-docs==1.20.0",
   "codespell==2.4.3",
-  "covdefaults==2.3.0",
-  "mypy==2.4.1",
   "pre-commit==4.7.0",
   "pre-commit-hooks==6.0.0",
+  "ruff==0.17.4",
+  "yamllint==1.38.0",
+]
+# Type checking and tests, which run against Home Assistant
+test = [
+  "covdefaults==2.3.0",
+  "mypy==2.4.1",
   # Pins the Home Assistant, pytest, pytest-asyncio and pytest-cov versions
   # the tests run against
   "pytest-homeassistant-custom-component==0.13.375",
-  "ruff==0.17.4",
-  "yamllint==1.38.0",
+]
+# Everything, installed by a plain `uv sync`
+dev = [
+  { include-group = "lint" },
+  { include-group = "test" },
 ]
 
 [tool.uv]

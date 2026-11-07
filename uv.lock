@@ -1533,6 +1533,20 @@ dev = [
     { name = "ruff" },
     { name = "yamllint" },
 ]
+lint = [
+    { name = "black" },
+    { name = "blacken-docs" },
+    { name = "codespell" },
+    { name = "pre-commit" },
+    { name = "pre-commit-hooks" },
+    { name = "ruff" },
+    { name = "yamllint" },
+]
+test = [
+    { name = "covdefaults" },
+    { name = "mypy" },
+    { name = "pytest-homeassistant-custom-component" },
+]
 
 [package.metadata]
 
@@ -1548,6 +1562,20 @@ dev = [
     { name = "pytest-homeassistant-custom-component", specifier = "==0.13.375" },
     { name = "ruff", specifier = "==0.17.4" },
     { name = "yamllint", specifier = "==1.38.0" },
+]
+lint = [
+    { name = "black", specifier = "==26.10.1" },
+    { name = "blacken-docs", specifier = "==1.20.0" },
+    { name = "codespell", specifier = "==2.4.3" },
+    { name = "pre-commit", specifier = "==4.7.0" },
+    { name = "pre-commit-hooks", specifier = "==6.0.0" },
+    { name = "ruff", specifier = "==0.17.4" },
+    { name = "yamllint", specifier = "==1.38.0" },
+]
+test = [
+    { name = "covdefaults", specifier = "==2.3.0" },
+    { name = "mypy", specifier = "==2.4.1" },
+    { name = "pytest-homeassistant-custom-component", specifier = "==0.13.375" },
 ]
 
 [[package]]

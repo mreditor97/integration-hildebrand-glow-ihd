@@ -12,6 +12,10 @@ permissions:
 
 env:
   DEFAULT_PYTHON: '3.14'
+  # Each job installs its dependencies with `uv sync` first, so stop `uv run`
+  # from syncing again. Otherwise it would install the full dev group in the
+  # lint jobs, which only install the lint group
+  UV_NO_SYNC: '1'
 
 jobs:
   codespell:
@@ -25,8 +29,12 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           python-version: ${{ env.DEFAULT_PYTHON }}
+          # The lint and test jobs install different groups, so they keep
+          # separate caches
+          enable-cache: true
+          cache-suffix: lint
       - name: 🏗 Install Python dependencies
-        run: uv sync --locked
+        run: uv sync --locked --only-group lint
       - name: 🚀 Check code for common misspellings
         run: uv run pre-commit run codespell --all-files
 
@@ -41,8 +49,12 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           python-version: ${{ env.DEFAULT_PYTHON }}
+          # The lint and test jobs install different groups, so they keep
+          # separate caches
+          enable-cache: true
+          cache-suffix: lint
       - name: 🏗 Install Python dependencies
-        run: uv sync --locked
+        run: uv sync --locked --only-group lint
       - name: 🚀 Run Ruff
         run: uv run ruff check .
 
@@ -57,8 +69,12 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           python-version: ${{ env.DEFAULT_PYTHON }}
+          # The lint and test jobs install different groups, so they keep
+          # separate caches
+          enable-cache: true
+          cache-suffix: lint
       - name: 🏗 Install Python dependencies
-        run: uv sync --locked
+        run: uv sync --locked --only-group lint
       - name: 🚀 Check code formatting with black
         run: uv run pre-commit run black --all-files
       - name: 🚀 Run black on docs
@@ -75,8 +91,12 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           python-version: ${{ env.DEFAULT_PYTHON }}
+          # The lint and test jobs install different groups, so they keep
+          # separate caches
+          enable-cache: true
+          cache-suffix: lint
       - name: 🏗 Install Python dependencies
-        run: uv sync --locked
+        run: uv sync --locked --only-group lint
       - name: 🏗 Cache pre-commit hook environments
         # The Renovate validator hook installs Node.js and Renovate, which
         # takes about a minute when it isn't cached
@@ -124,8 +144,23 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           python-version: ${{ env.DEFAULT_PYTHON }}
+          # The lint and test jobs install different groups, so they keep
+          # separate caches
+          enable-cache: true
+          cache-suffix: test
       - name: 🏗 Install Python dependencies
         run: uv sync --locked
+      - name: 🏗 Cache mypy results
+        # mypy only rechecks what changed since the cached run. A new lock file
+        # starts from the newest cache for the old one, which mypy checks is
+        # still valid
+        uses: actions/cache@v6
+        with:
+          path: .mypy_cache
+          key: mypy-${{ runner.os }}-${{ env.DEFAULT_PYTHON }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
+          restore-keys: |
+            mypy-${{ runner.os }}-${{ env.DEFAULT_PYTHON }}-${{ hashFiles('uv.lock') }}-
+            mypy-${{ runner.os }}-${{ env.DEFAULT_PYTHON }}-
       - name: 🚀 Run mypy
         run: uv run mypy
 
@@ -140,15 +175,20 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           python-version: ${{ env.DEFAULT_PYTHON }}
+          # The lint and test jobs install different groups, so they keep
+          # separate caches
+          enable-cache: true
+          cache-suffix: lint
       - name: 🏗 Install Python dependencies
-        run: uv sync --locked
+        run: uv sync --locked --only-group lint
       - name: 🏗 Set up Node.js
         uses: actions/setup-node@v7
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
       - name: 🏗 Install NPM dependencies
-        run: npm install
+        # Installs exactly what package-lock.json lists, from the npm cache
+        run: npm ci
       - name: 🚀 Run prettier
         run: uv run pre-commit run prettier --all-files
 
@@ -163,6 +203,10 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           python-version: ${{ env.DEFAULT_PYTHON }}
+          # The lint and test jobs install different groups, so they keep
+          # separate caches
+          enable-cache: true
+          cache-suffix: test
       - name: 🏗 Install Python dependencies
         run: uv sync --locked
       - name: 🚀 Run pytest
@@ -179,7 +223,11 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
         with:
           python-version: ${{ env.DEFAULT_PYTHON }}
+          # The lint and test jobs install different groups, so they keep
+          # separate caches
+          enable-cache: true
+          cache-suffix: lint
       - name: 🏗 Install Python dependencies
-        run: uv sync --locked
+        run: uv sync --locked --only-group lint
       - name: 🚀 Run yamllint
         run: uv run pre-commit run yamllint --all-files
