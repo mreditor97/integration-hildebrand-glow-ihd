@@ -98,7 +98,7 @@ async def test_migrate_settings_out_of_options(
     await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.LOADED
-    assert entry.minor_version == 2
+    assert entry.minor_version == 3
     assert entry.data == {**ENTRY_DATA, "device_id": DEVICE_ID}
     assert entry.options == {"time_zone_gas": "Europe/London"}
     assert entry.unique_id == f"{DOMAIN}_{DEVICE_ID}"
@@ -114,7 +114,7 @@ async def test_migrate_keeps_custom_title_and_taken_unique_id(
         domain=DOMAIN,
         unique_id=f"{DOMAIN}_{DEVICE_ID}",
         data={**ENTRY_DATA, "device_id": DEVICE_ID},
-        minor_version=2,
+        minor_version=3,
     ).add_to_hass(hass)
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -126,7 +126,7 @@ async def test_migrate_keeps_custom_title_and_taken_unique_id(
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    assert entry.minor_version == 2
+    assert entry.minor_version == 3
     assert entry.title == "My meter"
     assert entry.unique_id == f"{DOMAIN}_{DEVICE_ID.lower()}"
 

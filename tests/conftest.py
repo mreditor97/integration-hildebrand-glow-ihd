@@ -37,5 +37,5 @@ def config_entry() -> MockConfigEntry:
         title="Hildebrand Glow IHD",
         unique_id=f"{DOMAIN}_+",
         data=ENTRY_DATA,
-        minor_version=2,
+        minor_version=3,
     )

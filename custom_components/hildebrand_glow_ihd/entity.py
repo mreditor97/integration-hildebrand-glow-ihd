@@ -38,6 +38,8 @@ class GlowEntity(Entity):
         self._added = False
         # Existing installs rely on this unique ID, don't change it. It is
         # made from the sensor's name from before names were translated.
+        # Unique IDs made before version 1.3 of the entry also had a
+        # "smart_meter_" part, which the entry migration removes.
         self._attr_unique_id = slugify(f"{device_id}_{unique_id_name}")
         # Known if the device's first message was its state, otherwise the
         # device registry is updated when the state arrives

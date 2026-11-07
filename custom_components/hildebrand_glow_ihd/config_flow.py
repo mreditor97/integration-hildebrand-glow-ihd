@@ -108,8 +108,9 @@ class HildebrandGlowIHDMQTTConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
     # 1.2 normalised the device ID and topic prefix, and moved them out of
-    # the options into the entry data
-    MINOR_VERSION = 2
+    # the options into the entry data. 1.3 removed "smart_meter_" from the
+    # sensors' unique IDs.
+    MINOR_VERSION = 3
 
     _discovered_device_id: str
 

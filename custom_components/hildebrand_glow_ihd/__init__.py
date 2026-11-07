@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import logging
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from awesomeversion import AwesomeVersion
 from homeassistant.components import mqtt
 from homeassistant.const import CONF_DEVICE_ID
 from homeassistant.const import __version__ as HA_VERSION  # noqa: N812
+from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
 from .const import CONF_TOPIC_PREFIX, DOMAIN, MIN_HA_VERSION, PLATFORMS
@@ -31,6 +34,9 @@ if TYPE_CHECKING:
     from .models import GlowConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
+
+# Sensor unique IDs made before entry version 1.3 had this after the device ID
+OLD_UNIQUE_ID_PART = "_smart_meter_"
 
 # Set up from the UI only, there is no YAML configuration
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -96,7 +102,45 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.config_entries.async_update_entry(entry, **updates)
         _LOGGER.debug("Migrated %s to version 1.2", entry.title)
 
+    if entry.minor_version < 3:  # noqa: PLR2004
+        # Remove the "smart_meter_" part of the sensors' unique IDs. The
+        # entities keep their entity IDs, names and history.
+        await er.async_migrate_entries(
+            hass,
+            entry.entry_id,
+            partial(_migrate_unique_id, er.async_get(hass)),
+        )
+        hass.config_entries.async_update_entry(entry, minor_version=3)
+        _LOGGER.debug("Migrated %s to version 1.3", entry.title)
+
     return True
+
+
+@callback
+def _migrate_unique_id(
+    entity_registry: er.EntityRegistry,
+    entity_entry: er.RegistryEntry,
+) -> dict[str, Any] | None:
+    """Return a sensor's unique ID without its "smart_meter_" part."""
+    device_id, separator, rest = entity_entry.unique_id.partition(
+        OLD_UNIQUE_ID_PART,
+    )
+    if not separator or not device_id or not rest:
+        return None
+    unique_id = f"{device_id}_{rest}"
+    if entity_registry.async_get_entity_id(
+        entity_entry.domain,
+        DOMAIN,
+        unique_id,
+    ):
+        # Already taken, leave this entity as it is
+        _LOGGER.warning(
+            "Can't change the unique ID of %s to %s, another entity has it",
+            entity_entry.entity_id,
+            unique_id,
+        )
+        return None
+    return {"new_unique_id": unique_id}
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: GlowConfigEntry) -> bool:

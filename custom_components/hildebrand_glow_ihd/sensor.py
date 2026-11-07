@@ -73,8 +73,8 @@ PARALLEL_UPDATES = 0
 class GlowSensorEntityDescription(SensorEntityDescription):
     """Describes a sensor read from a Glow MQTT payload."""
 
-    # The sensor's name before it was translated. Existing installs rely on
-    # the unique ID made from it, so it must not change.
+    # The sensor's name before it was translated, without its old "Smart
+    # Meter" prefix. The unique ID is made from it, so it must not change.
     unique_id_name: str
     value_fn: Callable[[dict[str, Any]], Any]
     # Keep the previous state when the IHD reports 0
@@ -89,28 +89,28 @@ STATE_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="software_version",
         translation_key="software_version",
-        unique_id_name="Smart Meter IHD Software Version",
+        unique_id_name="IHD Software Version",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda js: js["software"],
     ),
     GlowSensorEntityDescription(
         key="hardware",
         translation_key="hardware",
-        unique_id_name="Smart Meter IHD Hardware",
+        unique_id_name="IHD Hardware",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda js: js["hardware"],
     ),
     GlowSensorEntityDescription(
         key="han_status",
         translation_key="han_status",
-        unique_id_name="Smart Meter IHD HAN Status",
+        unique_id_name="IHD HAN Status",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda js: js["han"]["status"],
     ),
     GlowSensorEntityDescription(
         key="han_rssi",
         translation_key="han_rssi",
-        unique_id_name="Smart Meter IHD HAN RSSI",
+        unique_id_name="IHD HAN RSSI",
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
         native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS,
         state_class=SensorStateClass.MEASUREMENT,
@@ -120,7 +120,7 @@ STATE_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="han_lqi",
         translation_key="han_lqi",
-        unique_id_name="Smart Meter IHD HAN LQI",
+        unique_id_name="IHD HAN LQI",
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda js: js["han"]["lqi"],
@@ -131,7 +131,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_export",
         translation_key="electricity_export",
-        unique_id_name="Smart Meter Electricity: Export",
+        unique_id_name="Electricity: Export",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -140,7 +140,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_import",
         translation_key="electricity_import",
-        unique_id_name="Smart Meter Electricity: Import",
+        unique_id_name="Electricity: Import",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -150,7 +150,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_import_today",
         translation_key="electricity_import_today",
-        unique_id_name="Smart Meter Electricity: Import (Today)",
+        unique_id_name="Electricity: Import (Today)",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -159,7 +159,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_import_week",
         translation_key="electricity_import_week",
-        unique_id_name="Smart Meter Electricity: Import (This week)",
+        unique_id_name="Electricity: Import (This week)",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -168,7 +168,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_import_month",
         translation_key="electricity_import_month",
-        unique_id_name="Smart Meter Electricity: Import (This month)",
+        unique_id_name="Electricity: Import (This month)",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -177,7 +177,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_unit_rate",
         translation_key="electricity_unit_rate",
-        unique_id_name="Smart Meter Electricity: Import Unit Rate",
+        unique_id_name="Electricity: Import Unit Rate",
         native_unit_of_measurement="GBP/kWh",
         value_fn=lambda js: js["electricitymeter"]["energy"]["import"]["price"][
             "unitrate"
@@ -187,7 +187,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_standing_charge",
         translation_key="electricity_standing_charge",
-        unique_id_name="Smart Meter Electricity: Import Standing Charge",
+        unique_id_name="Electricity: Import Standing Charge",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
         value_fn=lambda js: js["electricitymeter"]["energy"]["import"]["price"][
@@ -198,7 +198,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_power",
         translation_key="electricity_power",
-        unique_id_name="Smart Meter Electricity: Power",
+        unique_id_name="Electricity: Power",
         device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         state_class=SensorStateClass.MEASUREMENT,
@@ -208,7 +208,7 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="electricity_cost_today",
         translation_key="electricity_cost_today",
-        unique_id_name="Smart Meter Electricity: Cost (Today)",
+        unique_id_name="Electricity: Cost (Today)",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
         state_class=SensorStateClass.TOTAL,
@@ -221,7 +221,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import",
         translation_key="gas_import",
-        unique_id_name="Smart Meter Gas: Import",
+        unique_id_name="Gas: Import",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -231,7 +231,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_volume",
         translation_key="gas_import_volume",
-        unique_id_name="Smart Meter Gas: Import Vol",
+        unique_id_name="Gas: Import Vol",
         device_class=SensorDeviceClass.GAS,
         native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -241,7 +241,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_volume_today",
         translation_key="gas_import_volume_today",
-        unique_id_name="Smart Meter Gas: Import Vol (Today)",
+        unique_id_name="Gas: Import Vol (Today)",
         device_class=SensorDeviceClass.GAS,
         native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -250,7 +250,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_volume_week",
         translation_key="gas_import_volume_week",
-        unique_id_name="Smart Meter Gas: Import Vol (This week)",
+        unique_id_name="Gas: Import Vol (This week)",
         device_class=SensorDeviceClass.GAS,
         native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -259,7 +259,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_volume_month",
         translation_key="gas_import_volume_month",
-        unique_id_name="Smart Meter Gas: Import Vol (This month)",
+        unique_id_name="Gas: Import Vol (This month)",
         device_class=SensorDeviceClass.GAS,
         native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -268,7 +268,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_today",
         translation_key="gas_import_today",
-        unique_id_name="Smart Meter Gas: Import (Today)",
+        unique_id_name="Gas: Import (Today)",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -277,7 +277,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_week",
         translation_key="gas_import_week",
-        unique_id_name="Smart Meter Gas: Import (This week)",
+        unique_id_name="Gas: Import (This week)",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -286,7 +286,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_import_month",
         translation_key="gas_import_month",
-        unique_id_name="Smart Meter Gas: Import (This month)",
+        unique_id_name="Gas: Import (This month)",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -295,7 +295,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_unit_rate",
         translation_key="gas_unit_rate",
-        unique_id_name="Smart Meter Gas: Import Unit Rate",
+        unique_id_name="Gas: Import Unit Rate",
         native_unit_of_measurement="GBP/kWh",
         value_fn=lambda js: js["gasmeter"]["energy"]["import"]["price"]["unitrate"],
         ignore_zero_values=True,
@@ -303,7 +303,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_standing_charge",
         translation_key="gas_standing_charge",
-        unique_id_name="Smart Meter Gas: Import Standing Charge",
+        unique_id_name="Gas: Import Standing Charge",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
         value_fn=lambda js: js["gasmeter"]["energy"]["import"]["price"][
@@ -316,7 +316,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
     GlowSensorEntityDescription(
         key="gas_cost_today",
         translation_key="gas_cost_today",
-        unique_id_name="Smart Meter Gas: Cost (Today)",
+        unique_id_name="Gas: Cost (Today)",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
         state_class=SensorStateClass.TOTAL,

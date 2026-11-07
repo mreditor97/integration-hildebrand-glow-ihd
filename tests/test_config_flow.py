@@ -32,7 +32,7 @@ def _entry(device_id: str, topic_prefix: str = "glow") -> MockConfigEntry:
         title=f"Hildebrand Glow IHD ({device_id})",
         unique_id=f"{DOMAIN}_{device_id}",
         data={**ENTRY_DATA, "device_id": device_id, "topic_prefix": topic_prefix},
-        minor_version=2,
+        minor_version=3,
     )
 
 
