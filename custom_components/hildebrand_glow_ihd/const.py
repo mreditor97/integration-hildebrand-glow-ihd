@@ -17,6 +17,8 @@ CONF_TIME_ZONE_GAS: Final = "time_zone_gas"
 CONF_TOPIC_PREFIX: Final = "topic_prefix"
 
 DEFAULT_TITLE: Final = "Hildebrand Glow IHD"
+# The name devices get by default. New entity IDs start with it.
+DEFAULT_NAME: Final = "Glow"
 
 MANUFACTURER: Final = "Hildebrand Technology Limited"
 MODEL: Final = "Glow IHD"

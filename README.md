@@ -53,12 +53,13 @@ To add it yourself instead, go to **Settings → Devices & services → Add inte
 
 | Option                      | Default           | Description                                                                                                                                                                                                          |
 | --------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Name                        | `Glow`            | The device's name, and the start of new entity IDs. For example, `Home` gives `sensor.home_electricity_import`.                                                                                                      |
 | Device ID                   | `+`               | Leave as `+` to detect every Glow device publishing to your broker (recommended). To limit it to one device, enter that device's ID: the part of the topic after the prefix, e.g. `glow/`**`AABBCCDDEEFF`**`/STATE`. |
 | Topic prefix                | `glow`            | The first part of the MQTT topic. Only change this if you changed it on the device.                                                                                                                                  |
 | Electricity meter time zone | Your HA time zone | The time zone your electricity meter's daily total resets in.                                                                                                                                                        |
 | Gas meter time zone         | Your HA time zone | The time zone your gas meter's daily total resets in. Some gas meters reset at midnight UTC (01:00 during British Summer Time). If yours does, choose `UTC`.                                                         |
 
-Each Glow device appears as a device named **Glow &lt;device id&gt;**, and its sensors appear as soon as the first MQTT message arrives.
+Each Glow device appears as a device with the name you gave, and its sensors appear as soon as the first MQTT message arrives. If one entry with device ID `+` finds more than one device, they share the name and Home Assistant adds `_2` to the second device's entity IDs. To tell them apart, add one entry per device instead.
 
 To change the time zones later, open the integration and select **Configure**. To change the device ID or topic prefix, open the entry's menu and select **Reconfigure**. The integration reloads to apply either.
 
@@ -66,7 +67,7 @@ You can add more than one entry, for example one per device, as long as two entr
 
 ## Sensors
 
-Home Assistant shows each sensor after its device's name, e.g. **Glow AABBCCDDEEFF Electricity: Import (Today)**, and new entity IDs are the device ID followed by the sensor, e.g. `sensor.aabbccddeeff_electricity_import_today`. Entity IDs of sensors you already have aren't changed. Devices added by earlier versions, named **Glow Smart Meter &lt;device id&gt;**, are renamed when the integration loads, unless you have renamed them yourself.
+Home Assistant shows each sensor after its device's name, e.g. **Home Electricity: Import (Today)** for a device named `Home`, and new entity IDs start with the name, e.g. `sensor.home_electricity_import_today`. Entity IDs of sensors you already have aren't changed. Entries added before setup asked for a name keep the device name **Glow &lt;device id&gt;**. Give them a name with **Reconfigure**.
 
 ### Electricity
 
@@ -126,7 +127,7 @@ The lifetime **Import** sensors give the most reliable statistics. The _Today_ s
 
 ## Example automations
 
-These use the entity IDs a new install gets for a device with the ID `AABBCCDDEEFF`. Change them to match yours, which you can find on the device page. You can build the same automations in the automation editor.
+These use the entity IDs a new install named `Home` gets. Change them to match yours, which you can find on the device page. You can build the same automations in the automation editor.
 
 Notify when the house draws more than 3 kW for 5 minutes:
 
@@ -134,7 +135,7 @@ Notify when the house draws more than 3 kW for 5 minutes:
 alias: High electricity demand
 triggers:
   - trigger: numeric_state
-    entity_id: sensor.aabbccddeeff_electricity_power
+    entity_id: sensor.home_electricity_power
     above: 3
     for:
       minutes: 5
@@ -143,7 +144,7 @@ actions:
     data:
       message: >-
         Electricity demand has been over 3 kW for 5 minutes, it is now
-        {{ states('sensor.aabbccddeeff_electricity_power') }} kW.
+        {{ states('sensor.home_electricity_power') }} kW.
 ```
 
 Notify when the gas meter hasn't reported for 2 hours. This needs **Gas: Last Reading**, which is off by default, so turn it on from the device page first:
@@ -152,7 +153,7 @@ Notify when the gas meter hasn't reported for 2 hours. This needs **Gas: Last Re
 alias: Gas meter stopped reporting
 triggers:
   - trigger: state
-    entity_id: sensor.aabbccddeeff_gas_last_reading
+    entity_id: sensor.home_gas_last_reading
     for:
       hours: 2
 actions:
@@ -172,7 +173,7 @@ actions:
   - action: notify.notify
     data:
       message: >-
-        Electricity so far today: £{{ states('sensor.aabbccddeeff_electricity_cost_today') }}.
+        Electricity so far today: £{{ states('sensor.home_electricity_cost_today') }}.
 ```
 
 ## How the data updates

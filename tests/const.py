@@ -6,6 +6,7 @@ DEVICE_ID: Final = "AABBCCDDEEFF"
 OTHER_DEVICE_ID: Final = "112233445566"
 
 ENTRY_DATA: Final[dict[str, Any]] = {
+    "name": "Home",
     "device_id": "+",
     "topic_prefix": "glow",
     "time_zone_electricity": "Europe/London",

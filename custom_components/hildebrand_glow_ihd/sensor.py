@@ -8,9 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components import mqtt
 from homeassistant.components.sensor import (
-    DOMAIN as SENSOR_DOMAIN,
-)
-from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
@@ -33,6 +30,7 @@ from .const import (
     AVAILABILITY_CHECK_INTERVAL,
     AVAILABILITY_TIMEOUT,
     DEFAULT_DEVICE_ID,
+    DEFAULT_NAME,
     DOMAIN,
     POWER_ERROR_VALUE,
     MeterInterval,
@@ -449,6 +447,8 @@ class GlowMessageHandler:
         device_id = message.device_id
         _LOGGER.debug("New Glow device found: %s", device_id)
         device_state = GlowDeviceState(
+            # Entries made before setup asked for a name keep the old one
+            name=self._settings.name or f"{DEFAULT_NAME} {device_id}",
             last_seen=dt_util.utcnow(),
             payloads={message.kind: message.payload},
         )
@@ -617,10 +617,6 @@ class GlowSensor(GlowEntity, SensorEntity):
             description.unique_id_name,
             device_state,
         )
-        # New sensors get entity IDs made of the device ID and the sensor,
-        # e.g. sensor.aabbccddeeff_electricity_import, without the device
-        # name in front. Sensors already in the entity registry keep theirs.
-        self.entity_id = f"{SENSOR_DOMAIN}.{self.unique_id}"
         self._time_zone = time_zone
         self._attr_native_value = None
         # Whether an unusable value has been logged since the last good one

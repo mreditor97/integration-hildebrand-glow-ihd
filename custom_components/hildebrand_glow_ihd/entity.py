@@ -50,7 +50,7 @@ class GlowEntity(Entity):
             connections={(CONNECTION_NETWORK_MAC, device_id)},
             manufacturer=MANUFACTURER,
             model=MODEL,
-            name=f"Glow {device_id}",
+            name=device_state.name,
             sw_version=software_version,
             hw_version=hardware_version,
         )

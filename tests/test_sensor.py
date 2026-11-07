@@ -171,7 +171,7 @@ async def test_sensors(
         assert entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
     for unique_id_suffix, object_id, expected_state in EXPECTED_SENSORS:
         entity_id = _entity_id(hass, unique_id_suffix)
-        assert entity_id == f"sensor.{DEVICE_ID.lower()}_{object_id}"
+        assert entity_id == f"sensor.home_{object_id}"
         state = hass.states.get(entity_id)
         assert state is not None
         assert state.state == expected_state, entity_id
@@ -182,7 +182,7 @@ async def test_sensors(
         config_entry.entry_id,
     )
     assert device is not None
-    assert device.name == f"Glow {DEVICE_ID}"
+    assert device.name == "Home"
     assert device.manufacturer == "Hildebrand Technology Limited"
     assert device.model == "Glow IHD"
 
@@ -197,9 +197,7 @@ async def test_names(
     await _publish_all(hass)
     state = hass.states.get(_entity_id(hass, "electricity_import"))
     assert state is not None
-    assert state.attributes["friendly_name"] == (
-        f"Glow {DEVICE_ID} Electricity: Import"
-    )
+    assert state.attributes["friendly_name"] == ("Home Electricity: Import")
 
 
 async def test_cost_last_reset(
@@ -600,7 +598,7 @@ async def test_disabled_sensors(
 
     for unique_id_suffix, object_id, expected_state in DISABLED_SENSORS:
         entity_id = _entity_id(hass, unique_id_suffix)
-        assert entity_id == f"sensor.{DEVICE_ID.lower()}_{object_id}"
+        assert entity_id == f"sensor.home_{object_id}"
         state = hass.states.get(entity_id)
         assert state is not None
         assert state.state == expected_state, entity_id
@@ -723,5 +721,31 @@ async def test_existing_device_renamed(
         config_entry.entry_id,
     )
     assert device is not None
-    assert device.name == f"Glow {DEVICE_ID}"
+    assert device.name == "Home"
     assert device.model == "Glow IHD"
+
+
+async def test_entry_without_name_keeps_old_device_name(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+) -> None:
+    """Entries made before setup asked for a name keep their device names."""
+    data = {key: value for key, value in ENTRY_DATA.items() if key != "name"}
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=f"{DOMAIN}_+",
+        data=data,
+        minor_version=3,
+    )
+    await _setup(hass, entry)
+    await _publish_all(hass)
+    device = dr.async_get(hass).async_get_device_by_connection(
+        (dr.CONNECTION_NETWORK_MAC, DEVICE_ID),
+        entry.entry_id,
+    )
+    assert device is not None
+    assert device.name == f"Glow {DEVICE_ID}"
+    assert (
+        _entity_id(hass, "electricity_import")
+        == f"sensor.glow_{DEVICE_ID.lower()}_electricity_import"
+    )

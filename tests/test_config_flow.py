@@ -121,6 +121,16 @@ async def test_user_flow_normalises_device_id(
     assert result["result"].unique_id == f"{DOMAIN}_{DEVICE_ID}"
 
 
+async def test_user_flow_blank_name(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+) -> None:
+    """A blank name is replaced by the default."""
+    result = await _user_flow(hass, {**ENTRY_DATA, "name": "  "})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["name"] == "Glow"
+
+
 async def test_user_flow_same_device_differently_typed(
     hass: HomeAssistant,
     mqtt_mock: MqttMockHAClient,  # noqa: ARG001
@@ -178,7 +188,7 @@ async def test_mqtt_discovery(
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        TIME_ZONES,
+        {**TIME_ZONES, "name": " Home "},
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == f"Hildebrand Glow IHD ({DEVICE_ID})"
