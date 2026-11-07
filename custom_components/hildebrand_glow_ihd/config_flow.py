@@ -10,7 +10,7 @@ from homeassistant.config_entries import (
     ConfigFlow,
     OptionsFlowWithReload,
 )
-from homeassistant.const import CONF_DEVICE_ID
+from homeassistant.const import CONF_DEVICE_ID, CONF_NAME
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
     SelectSelector,
@@ -23,6 +23,7 @@ from .const import (
     CONF_TIME_ZONE_GAS,
     CONF_TOPIC_PREFIX,
     DEFAULT_DEVICE_ID,
+    DEFAULT_NAME,
     DEFAULT_TOPIC_PREFIX,
     DOMAIN,
 )
@@ -52,6 +53,13 @@ def unique_id_for(device_id: str) -> str:
     """Return the config entry unique ID for a normalised device ID."""
     # Existing entries use this unique ID, don't change its format
     return f"{DOMAIN}_{device_id}"
+
+
+def _name_schema(defaults: Mapping[str, Any]) -> dict[vol.Marker, Any]:
+    """Return the form field for the name that entity IDs are made from."""
+    return {
+        vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, DEFAULT_NAME)): str,
+    }
 
 
 def _device_schema(defaults: Mapping[str, Any]) -> dict[vol.Marker, Any]:
@@ -94,10 +102,16 @@ async def _async_time_zone_schema(
     }
 
 
+def _normalize_name(name: str | None) -> str:
+    """Return a name with surrounding spaces removed, or the default if blank."""
+    return (name or "").strip() or DEFAULT_NAME
+
+
 def _normalize_device_input(user_input: Mapping[str, Any]) -> dict[str, Any]:
     """Return the form input with the device ID and topic prefix normalised."""
     return {
         **user_input,
+        CONF_NAME: _normalize_name(user_input.get(CONF_NAME)),
         CONF_DEVICE_ID: normalize_device_id(user_input.get(CONF_DEVICE_ID)),
         CONF_TOPIC_PREFIX: normalize_topic_prefix(user_input.get(CONF_TOPIC_PREFIX)),
     }
@@ -158,6 +172,7 @@ class HildebrandGlowIHDMQTTConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema(
                 {  # type: ignore[arg-type]
+                    **_name_schema(defaults),
                     **_device_schema(defaults),
                     **await _async_time_zone_schema(self.hass, defaults),
                 },
@@ -198,13 +213,17 @@ class HildebrandGlowIHDMQTTConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_DEVICE_ID: device_id,
                     CONF_TOPIC_PREFIX: DEFAULT_TOPIC_PREFIX,
                     **user_input,
+                    CONF_NAME: _normalize_name(user_input.get(CONF_NAME)),
                 },
             )
 
         return self.async_show_form(
             step_id="discovery_confirm",
             data_schema=vol.Schema(
-                await _async_time_zone_schema(self.hass, {}),  # type: ignore[arg-type]
+                {  # type: ignore[arg-type]
+                    **_name_schema({}),
+                    **await _async_time_zone_schema(self.hass, {}),
+                },
             ),
             description_placeholders={"device_id": device_id},
         )
@@ -236,7 +255,10 @@ class HildebrandGlowIHDMQTTConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=vol.Schema(
-                _device_schema(user_input or entry_settings(entry)),  # type: ignore[arg-type]
+                {  # type: ignore[arg-type]
+                    **_name_schema(user_input or entry_settings(entry)),
+                    **_device_schema(user_input or entry_settings(entry)),
+                },
             ),
             errors=errors,
         )

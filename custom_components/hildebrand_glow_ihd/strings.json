@@ -14,12 +14,14 @@
         "title": "Hildebrand Glow IHD Integration",
         "description": "Configuring the Hildebrand Glow IHD Integration.",
         "data": {
+          "name": "Name",
           "device_id": "Device ID",
           "topic_prefix": "Topic prefix",
           "time_zone_electricity": "Electricity meter time zone",
           "time_zone_gas": "Gas meter time zone"
         },
         "data_description": {
+          "name": "Used for the device's name and the start of new entity IDs, e.g. Home gives sensor.home_electricity_import.",
           "device_id": "Leave as + to detect every Glow device publishing to your MQTT broker. To read one device only, enter its ID from its topics, e.g. AABBCCDDEEFF in glow/AABBCCDDEEFF/STATE.",
           "topic_prefix": "The first part of the device's MQTT topics. Leave as glow unless you changed it on the device.",
           "time_zone_electricity": "The time zone the electricity meter's daily totals reset in.",
@@ -28,24 +30,28 @@
       },
       "discovery_confirm": {
         "title": "Hildebrand Glow IHD Integration",
-        "description": "Found Glow device {device_id} publishing to your MQTT broker. Choose the time zones its meters use, then submit to add it.",
+        "description": "Found Glow device {device_id} publishing to your MQTT broker. Give it a name, choose the time zones its meters use, then submit to add it.",
         "data": {
+          "name": "Name",
           "time_zone_electricity": "Electricity meter time zone",
           "time_zone_gas": "Gas meter time zone"
         },
         "data_description": {
+          "name": "Used for the device's name and the start of new entity IDs, e.g. Home gives sensor.home_electricity_import.",
           "time_zone_electricity": "The time zone the electricity meter's daily totals reset in.",
           "time_zone_gas": "The time zone the gas meter's daily totals reset in. Some gas meters reset at midnight UTC, if yours does choose UTC."
         }
       },
       "reconfigure": {
         "title": "Hildebrand Glow IHD Integration",
-        "description": "Change which Glow device's messages this entry reads.",
+        "description": "Change the name, or which Glow device's messages this entry reads. A new name renames the device, but entity IDs that already exist aren't changed.",
         "data": {
+          "name": "Name",
           "device_id": "Device ID",
           "topic_prefix": "Topic prefix"
         },
         "data_description": {
+          "name": "Used for the device's name and the start of new entity IDs, e.g. Home gives sensor.home_electricity_import.",
           "device_id": "Leave as + to detect every Glow device publishing to your MQTT broker. To read one device only, enter its ID from its topics, e.g. AABBCCDDEEFF in glow/AABBCCDDEEFF/STATE.",
           "topic_prefix": "The first part of the device's MQTT topics. Leave as glow unless you changed it on the device."
         }
