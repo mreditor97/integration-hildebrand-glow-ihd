@@ -1,44 +1,82 @@
 {
   "config": {
+    "flow_title": "Glow IHD {device_id}",
     "abort": {
-      "already_configured": "Already configured"
+      "already_configured": "This Glow device is already configured.",
+      "invalid_discovery_info": "The discovered MQTT message isn't from a Glow device.",
+      "reconfigure_successful": "The settings were changed."
     },
     "error": {
-      "cannot_connect": "Failed to connect, please try again.",
-      "invalid_auth": "Invalid authentication.",
-      "too_many_requests": "Too many requests, retry later.",
-      "unknown": "Unexpected error."
+      "overlaps_existing_entry": "Another entry already reads this device's messages. An entry with device ID + reads every device with its topic prefix, so it can't be added next to an entry for a single device with the same prefix."
     },
     "step": {
       "user": {
-        "description": "Configuring the Home Assistant Hildebrand Glow IHD Integration.",
+        "title": "Hildebrand Glow IHD Integration",
+        "description": "Configuring the Hildebrand Glow IHD Integration.",
         "data": {
-          "device_id": "Device Id (leave as + to auto-detect all devices on your MQTT)",
-          "topic_prefix": "Topic Prefix (leaving as 'glow' is usually the right thing to do!)",
-          "time_zone_electricity": "Time zone that the electricity meter uses.",
-          "time_zone_gas": "Time zone that the gas meter uses."
+          "device_id": "Device ID",
+          "topic_prefix": "Topic prefix",
+          "time_zone_electricity": "Electricity meter time zone",
+          "time_zone_gas": "Gas meter time zone"
         },
-        "title": "Home Assistant Hildebrand Glow IHD Integration"
+        "data_description": {
+          "device_id": "Leave as + to detect every Glow device publishing to your MQTT broker. To read one device only, enter its ID from its topics, e.g. AABBCCDDEEFF in glow/AABBCCDDEEFF/STATE.",
+          "topic_prefix": "The first part of the device's MQTT topics. Leave as glow unless you changed it on the device.",
+          "time_zone_electricity": "The time zone the electricity meter's daily totals reset in.",
+          "time_zone_gas": "The time zone the gas meter's daily totals reset in. Some gas meters reset at midnight UTC, if yours does choose UTC."
+        }
+      },
+      "discovery_confirm": {
+        "title": "Hildebrand Glow IHD Integration",
+        "description": "Found Glow device {device_id} publishing to your MQTT broker. Choose the time zones its meters use, then submit to add it.",
+        "data": {
+          "time_zone_electricity": "Electricity meter time zone",
+          "time_zone_gas": "Gas meter time zone"
+        },
+        "data_description": {
+          "time_zone_electricity": "The time zone the electricity meter's daily totals reset in.",
+          "time_zone_gas": "The time zone the gas meter's daily totals reset in. Some gas meters reset at midnight UTC, if yours does choose UTC."
+        }
+      },
+      "reconfigure": {
+        "title": "Hildebrand Glow IHD Integration",
+        "description": "Change which Glow device's messages this entry reads.",
+        "data": {
+          "device_id": "Device ID",
+          "topic_prefix": "Topic prefix"
+        },
+        "data_description": {
+          "device_id": "Leave as + to detect every Glow device publishing to your MQTT broker. To read one device only, enter its ID from its topics, e.g. AABBCCDDEEFF in glow/AABBCCDDEEFF/STATE.",
+          "topic_prefix": "The first part of the device's MQTT topics. Leave as glow unless you changed it on the device."
+        }
       }
     }
   },
   "options": {
     "step": {
       "init": {
-        "description": "Configuring the Home Assistant Hildebrand Glow IHD Integration.",
+        "title": "Hildebrand Glow IHD Integration",
+        "description": "Change the time zones the meters use. To change the device ID or topic prefix, use Reconfigure.",
         "data": {
-          "device_id": "Device Id (leave as + to auto-detect all devices on your MQTT)",
-          "topic_prefix": "Topic Prefix (leaving as 'glow' is usually the right thing to do!)",
-          "time_zone_electricity": "Time zone that the electricity meter uses.",
-          "time_zone_gas": "Time zone that the gas meter uses."
+          "time_zone_electricity": "Electricity meter time zone",
+          "time_zone_gas": "Gas meter time zone"
         },
-        "title": "Home Assistant Hildebrand Glow IHD Integration"
+        "data_description": {
+          "time_zone_electricity": "The time zone the electricity meter's daily totals reset in.",
+          "time_zone_gas": "The time zone the gas meter's daily totals reset in. Some gas meters reset at midnight UTC, if yours does choose UTC."
+        }
       }
     }
   },
   "exceptions": {
     "mqtt_not_available": {
       "message": "The MQTT integration is not available. Set up MQTT, then try again."
+    }
+  },
+  "issues": {
+    "no_messages": {
+      "title": "No messages from a Glow device",
+      "description": "{title} hasn't received any messages on {topic} in the {minutes} minutes since it was set up, so it has no sensors.\n\nCheck that the Glow device is publishing to your MQTT broker, and that the entry's device ID and topic prefix match its topics. You can change them with Reconfigure on the integration's page. This issue goes away when a message arrives."
     }
   },
   "entity": {

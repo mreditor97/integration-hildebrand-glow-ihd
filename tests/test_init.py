@@ -8,10 +8,14 @@ from unittest.mock import patch
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import device_registry as dr
 from homeassistant.setup import async_setup_component
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.hildebrand_glow_ihd.const import DOMAIN
+
+from .const import DEVICE_ID, ENTRY_DATA
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
     from pytest_homeassistant_custom_component.typing import (
         MqttMockHAClient,
         WebSocketGenerator,
@@ -58,14 +62,85 @@ async def test_setup_retries_without_mqtt(
 async def test_blank_title_is_replaced(
     hass: HomeAssistant,
     mqtt_mock: MqttMockHAClient,  # noqa: ARG001
-    config_entry: MockConfigEntry,
 ) -> None:
     """Entries from earlier versions with a blank title get one."""
-    config_entry.add_to_hass(hass)
-    hass.config_entries.async_update_entry(config_entry, title="")
-    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="",
+        unique_id=f"{DOMAIN}_+",
+        data=ENTRY_DATA,
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    assert config_entry.title == "Hildebrand Glow IHD"
+    assert entry.title == "Hildebrand Glow IHD"
+
+
+async def test_migrate_settings_out_of_options(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+) -> None:
+    """Version 1.1 entries get normalised settings in their data."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Hildebrand Glow IHD",
+        unique_id=f"{DOMAIN}_+",
+        data=ENTRY_DATA,
+        # Saved by Configure in earlier versions
+        options={
+            "device_id": DEVICE_ID.lower(),
+            "topic_prefix": "glow/",
+            "time_zone_gas": "Europe/London",
+        },
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.minor_version == 2
+    assert entry.data == {**ENTRY_DATA, "device_id": DEVICE_ID}
+    assert entry.options == {"time_zone_gas": "Europe/London"}
+    assert entry.unique_id == f"{DOMAIN}_{DEVICE_ID}"
+    assert entry.title == f"Hildebrand Glow IHD ({DEVICE_ID})"
+
+
+async def test_migrate_keeps_custom_title_and_taken_unique_id(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+) -> None:
+    """Migration keeps a user's title, and a unique ID another entry has."""
+    MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=f"{DOMAIN}_{DEVICE_ID}",
+        data={**ENTRY_DATA, "device_id": DEVICE_ID},
+        minor_version=2,
+    ).add_to_hass(hass)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="My meter",
+        unique_id=f"{DOMAIN}_{DEVICE_ID.lower()}",
+        data={**ENTRY_DATA, "device_id": DEVICE_ID.lower()},
+    )
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.minor_version == 2
+    assert entry.title == "My meter"
+    assert entry.unique_id == f"{DOMAIN}_{DEVICE_ID.lower()}"
+
+
+async def test_migrate_from_future_version_fails(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+) -> None:
+    """An entry made by a newer version of the integration isn't set up."""
+    entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, version=2)
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.MIGRATION_ERROR
 
 
 async def test_device_can_be_removed(

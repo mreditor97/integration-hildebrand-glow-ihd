@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.const import CONF_DEVICE_ID
@@ -16,11 +16,23 @@ from .const import (
 from .helpers import normalize_device_id, normalize_topic_prefix
 
 if TYPE_CHECKING:
-    from datetime import tzinfo
+    from datetime import datetime, tzinfo
 
     from homeassistant.config_entries import ConfigEntry
 
+    from .const import TopicKind
+
 type GlowConfigEntry = ConfigEntry[GlowRuntimeData]
+
+
+@dataclass(slots=True)
+class GlowDeviceState:
+    """What has been heard from one Glow device since the entry was set up."""
+
+    last_seen: datetime
+    available: bool = True
+    # The latest payload of each kind of message, for diagnostics
+    payloads: dict[TopicKind, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +43,8 @@ class GlowRuntimeData:
     topic_prefix: str
     time_zone_electricity: tzinfo
     time_zone_gas: tzinfo
+    # The devices heard from so far, by device ID
+    devices: dict[str, GlowDeviceState] = field(default_factory=dict)
 
 
 def entry_settings(entry: ConfigEntry) -> dict[str, Any]:

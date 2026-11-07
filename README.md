@@ -13,7 +13,10 @@ The device publishes the readings from your SMETS1/SMETS2 smart meter to your MQ
 - [Configuration](#configuration)
 - [Sensors](#sensors)
 - [Energy dashboard](#energy-dashboard)
+- [How the data updates](#how-the-data-updates)
 - [Troubleshooting](#troubleshooting)
+- [Known limitations](#known-limitations)
+- [Removing the integration](#removing-the-integration)
 - [Development](#development)
 - [Credits](#credits)
 
@@ -23,6 +26,8 @@ The device publishes the readings from your SMETS1/SMETS2 smart meter to your MQ
 - An MQTT broker, such as the Mosquitto broker add-on, and the [MQTT integration](https://www.home-assistant.io/integrations/mqtt/) set up in Home Assistant.
 - Local MQTT turned on for your Glow device and pointed at your broker. This [guide by Joshua Cooper](https://medium.com/@joshua.cooper/glow-local-mqtt-f69b776b7af4) explains how.
 - Home Assistant 2026.11 or newer, which includes the Marketplace.
+
+The integration works with any device that publishes Glow's local MQTT messages: the Glow IHD and the Glow CAD, with SMETS1 or SMETS2 meters. It needs nothing from Hildebrand's cloud service.
 
 ## Installation
 
@@ -40,7 +45,9 @@ The device publishes the readings from your SMETS1/SMETS2 smart meter to your MQ
 
 ## Configuration
 
-Go to **Settings → Devices & services → Add integration** and search for **Hildebrand Glow IHD Integration**.
+Once your Glow device publishes to your broker, Home Assistant finds it and shows it under **Settings → Devices & services → Discovered**. Select **Add**, choose the meters' time zones, and submit. Discovery only looks for the default `glow` topic prefix.
+
+To add it yourself instead, go to **Settings → Devices & services → Add integration** and search for **Hildebrand Glow IHD Integration**.
 
 | Option                      | Default           | Description                                                                                                                                                                                                          |
 | --------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -51,7 +58,9 @@ Go to **Settings → Devices & services → Add integration** and search for **H
 
 Each Glow device appears as a device named **Glow Smart Meter &lt;device id&gt;**, and its sensors appear as soon as the first MQTT message arrives.
 
-To change these settings later, open the integration and select **Configure**. The integration reloads to apply them.
+To change the time zones later, open the integration and select **Configure**. To change the device ID or topic prefix, open the entry's menu and select **Reconfigure**. The integration reloads to apply either.
+
+You can add more than one entry, for example one per device, as long as two entries never read the same device. An entry with device ID `+` reads every device under its topic prefix, so it can't sit next to an entry for a single device with the same prefix.
 
 ## Sensors
 
@@ -65,8 +74,8 @@ Home Assistant shows each sensor after its device's name, e.g. **Glow Smart Mete
 | Electricity: Import (Today / This week / This month) | kWh     | Reset by the meter                          |
 | Electricity: Export                                  | kWh     | Lifetime export reading                     |
 | Electricity: Power                                   | kW      | Current demand                              |
-| Electricity: Import Unit Rate                        | GBP/kWh | Current unit rate                           |
-| Electricity: Import Standing Charge                  | GBP     | Daily standing charge                       |
+| Electricity: Import Unit Rate                        | GBP/kWh | Current unit rate, no long-term statistics  |
+| Electricity: Import Standing Charge                  | GBP     | Daily standing charge, no long-term stats   |
 | Electricity: Cost (Today)                            | GBP     | Standing charge + today's usage × unit rate |
 
 ### Gas
@@ -77,15 +86,17 @@ Home Assistant shows each sensor after its device's name, e.g. **Glow Smart Mete
 | Gas: Import (Today / This week / This month)     | kWh     | Reset by the meter                          |
 | Gas: Import Vol                                  | m³      | Lifetime volume reading                     |
 | Gas: Import Vol (Today / This week / This month) | m³      | Reset by the meter                          |
-| Gas: Import Unit Rate                            | GBP/kWh | Current unit rate                           |
-| Gas: Import Standing Charge                      | GBP     | Daily standing charge                       |
+| Gas: Import Unit Rate                            | GBP/kWh | Current unit rate, no long-term statistics  |
+| Gas: Import Standing Charge                      | GBP     | Daily standing charge, no long-term stats   |
 | Gas: Cost (Today)                                | GBP     | Standing charge + today's usage × unit rate |
 
 There is no live gas power sensor: the IHD stopped publishing gas power in software update 1.8.13 (June 2022).
 
 ### Diagnostics
 
-IHD software version, hardware, HAN (Zigbee) status, HAN RSSI and HAN LQI.
+IHD software version, hardware, HAN (Zigbee) status, HAN RSSI and HAN LQI. The device page also shows the IHD's software and hardware versions.
+
+The unit rate and standing charge sensors are prices rather than running totals, so Home Assistant keeps their history but no long-term statistics. If you upgraded from a version before this change, **Developer tools → Statistics** may list them with a fix to remove their old statistics.
 
 ## Energy dashboard
 
@@ -98,9 +109,15 @@ In **Settings → Dashboards → Energy**:
 
 The lifetime **Import** sensors give the most reliable statistics. The _Today_ sensors and _Cost (Today)_ reset every day, so a reset at an unexpected time can show up as a spike or a negative value.
 
+## How the data updates
+
+The Glow device pushes its readings to your MQTT broker, and the sensors update as each message arrives. Nothing is polled. How often readings arrive is up to the device and your meters: gas readings usually arrive much less often than electricity readings.
+
+If a device publishes nothing at all for 15 minutes, its sensors become unavailable until its next message, and a line is logged at info level each way.
+
 ## Troubleshooting
 
-**No sensors appear.** Check that the device is publishing to your broker. Subscribe to `glow/#`, for example with MQTT Explorer or:
+**No sensors appear.** If no message arrives in the 15 minutes after the integration is set up, a repair issue appears under **Settings → Repairs**. Check that the device is publishing to your broker. Subscribe to `glow/#`, for example with MQTT Explorer or:
 
 ```sh
 mosquitto_sub -h <broker> -u <user> -P <password> -t 'glow/#' -v
@@ -110,15 +127,37 @@ You should see `glow/<device id>/STATE`, `glow/<device id>/SENSOR/electricitymet
 
 **Prices or cost show as unknown.** The device publishes `null` prices until your supplier sends tariff data to the meter. This depends on the supplier, not on this integration.
 
-**Daily values reset at 01:00 instead of midnight.** The meter resets its daily totals in UTC. Add the integration again with that meter's time zone set to `UTC` (see [Configuration](#configuration)).
+**Daily values reset at 01:00 instead of midnight.** The meter resets its daily totals in UTC. Open the integration, select **Configure** and set that meter's time zone to `UTC` (see [Configuration](#configuration)).
 
-**Debug logging.** Add this to `configuration.yaml`, restart, and check the log:
+**Sensors are unavailable.** The device hasn't published for 15 minutes. Check that it is powered, on your network and connected to the broker.
+
+**Reporting a problem.** Open the integration's menu and select **Download diagnostics**, then attach the file to an [issue](https://github.com/mreditor97/integration-hildebrand-glow-ihd/issues). It has the entry's settings and the latest message of each kind from each device, with device IDs, MAC addresses, the EUI and MPAN/MPRN numbers removed.
+
+**Debug logging.** Open the integration and select **Enable debug logging**, reproduce the problem, then select **Disable debug logging** to download the log. Or add this to `configuration.yaml`, restart, and check the log:
 
 ```yaml
 logger:
   logs:
     custom_components.hildebrand_glow_ihd: debug
 ```
+
+## Known limitations
+
+- Prices are always shown in GBP, the currency the device reports for UK meters.
+- Gas volume sensors are unknown when the device reports the volume fields in kWh, because kWh can't be converted to m³ without the calorific value.
+- There is no gas power sensor, see [Gas](#gas).
+- Discovery only finds devices using the default `glow` topic prefix. Add other prefixes by hand.
+- A device's sensors appear only after its first message following a restart or reload.
+
+## Removing the integration
+
+1. Go to **Settings → Devices & services** and open **Hildebrand Glow IHD Integration**.
+2. Open each entry's menu and select **Delete**.
+3. If you installed it from the Marketplace, remove it there too, then restart Home Assistant. For a manual install, delete the `custom_components/hildebrand_glow_ihd` folder and restart.
+
+Removing the integration doesn't change your Glow device or broker settings.
+
+See the [releases](https://github.com/mreditor97/integration-hildebrand-glow-ihd/releases) for what changed in each version.
 
 ## Development
 

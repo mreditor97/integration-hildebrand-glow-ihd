@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_mqtt_message,
+    async_fire_time_changed,
 )
 
-from custom_components.hildebrand_glow_ihd.const import DOMAIN
+from custom_components.hildebrand_glow_ihd.const import AVAILABILITY_TIMEOUT, DOMAIN
 
 from .const import (
     DEVICE_ID,
@@ -26,6 +29,7 @@ from .const import (
 )
 
 if TYPE_CHECKING:
+    from freezegun.api import FrozenDateTimeFactory
     from homeassistant.core import HomeAssistant
     from pytest_homeassistant_custom_component.typing import MqttMockHAClient
 
@@ -337,3 +341,156 @@ async def test_reload_and_unload(
     state = hass.states.get(entity_id)
     assert state is not None
     assert state.state == STATE_UNAVAILABLE
+
+
+async def test_price_sensors_have_no_state_class(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """Prices aren't totals, so they aren't added up in statistics."""
+    await _setup(hass, config_entry)
+    await _publish_all(hass)
+    unit_rate = hass.states.get(
+        _entity_id(hass, "smart_meter_electricity_import_unit_rate"),
+    )
+    assert unit_rate is not None
+    assert "state_class" not in unit_rate.attributes
+    assert "device_class" not in unit_rate.attributes
+    assert unit_rate.attributes["unit_of_measurement"] == "GBP/kWh"
+    standing_charge = hass.states.get(
+        _entity_id(hass, "smart_meter_electricity_import_standing_charge"),
+    )
+    assert standing_charge is not None
+    assert "state_class" not in standing_charge.attributes
+    assert standing_charge.attributes["device_class"] == "monetary"
+
+
+async def test_unavailable_when_device_goes_quiet(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A device's sensors go unavailable without messages, and come back."""
+    await _setup(hass, config_entry)
+    await _publish_all(hass)
+    entity_id = _entity_id(hass, "smart_meter_electricity_import")
+
+    freezer.tick(AVAILABILITY_TIMEOUT - timedelta(minutes=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == "6613.405"  # type: ignore[union-attr]
+
+    freezer.tick(timedelta(minutes=2))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == STATE_UNAVAILABLE  # type: ignore[union-attr]
+    assert f"Glow device {DEVICE_ID} hasn't published" in caplog.text
+
+    # Any message brings back every sensor of the device
+    _publish(hass, STATE_TOPIC, STATE_PAYLOAD)
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == "6613.405"  # type: ignore[union-attr]
+    assert f"Glow device {DEVICE_ID} is publishing again" in caplog.text
+
+
+async def test_device_versions(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """The device page shows the IHD's software and hardware versions."""
+    await _setup(hass, config_entry)
+    # The first message isn't the state, so the versions aren't known yet
+    _publish(hass, ELECTRICITY_TOPIC, ELECTRICITY_PAYLOAD)
+    await hass.async_block_till_done()
+    device_registry = dr.async_get(hass)
+    device = device_registry.async_get_device_by_connection(
+        (dr.CONNECTION_NETWORK_MAC, DEVICE_ID),
+        config_entry.entry_id,
+    )
+    assert device is not None
+    assert device.sw_version is None
+
+    _publish(hass, STATE_TOPIC, STATE_PAYLOAD)
+    await hass.async_block_till_done()
+    updated = device_registry.async_get_device_by_connection(
+        (dr.CONNECTION_NETWORK_MAC, DEVICE_ID),
+        config_entry.entry_id,
+    )
+    assert updated is not None
+    assert updated.sw_version == "v1.8.12"
+    assert updated.hw_version == "GLOW-IHD-01-1v4-SMETS2"
+
+    _publish(hass, STATE_TOPIC, {**STATE_PAYLOAD, "software": "v1.9.0"})
+    await hass.async_block_till_done()
+    updated = device_registry.async_get_device_by_connection(
+        (dr.CONNECTION_NETWORK_MAC, DEVICE_ID),
+        config_entry.entry_id,
+    )
+    assert updated is not None
+    assert updated.sw_version == "v1.9.0"
+
+
+async def test_device_versions_from_first_message(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """A device whose first message is its state gets its versions straight away."""
+    await _setup(hass, config_entry)
+    _publish(hass, STATE_TOPIC, STATE_PAYLOAD)
+    await hass.async_block_till_done()
+    device = dr.async_get(hass).async_get_device_by_connection(
+        (dr.CONNECTION_NETWORK_MAC, DEVICE_ID),
+        config_entry.entry_id,
+    )
+    assert device is not None
+    assert device.sw_version == "v1.8.12"
+
+
+async def test_repair_issue_when_nothing_heard(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """A repair issue is raised if no device publishes, and removed when one does."""
+    await _setup(hass, config_entry)
+    issue_id = f"no_messages_{config_entry.entry_id}"
+    issue_registry = ir.async_get(hass)
+
+    freezer.tick(AVAILABILITY_TIMEOUT + timedelta(seconds=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    issue = issue_registry.async_get_issue(DOMAIN, issue_id)
+    assert issue is not None
+    assert issue.translation_placeholders == {
+        "title": "Hildebrand Glow IHD",
+        "topic": "glow/+/#",
+        "minutes": "15",
+    }
+
+    _publish(hass, STATE_TOPIC, STATE_PAYLOAD)
+    await hass.async_block_till_done()
+    assert issue_registry.async_get_issue(DOMAIN, issue_id) is None
+
+
+async def test_no_repair_issue_when_heard(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """No repair issue is raised once a device has published."""
+    await _setup(hass, config_entry)
+    await _publish_all(hass)
+    freezer.tick(AVAILABILITY_TIMEOUT + timedelta(seconds=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert not ir.async_get(hass).async_get_issue(
+        DOMAIN,
+        f"no_messages_{config_entry.entry_id}",
+    )
