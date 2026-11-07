@@ -10,7 +10,9 @@ rules:
   appropriate-polling:
     status: exempt
     comment: The sensors are updated from MQTT messages, nothing is polled.
-  brands: todo
+  brands:
+    status: done
+    comment: Icons are in brand/, which Home Assistant 2026.3 and newer use.
   common-modules: done
   config-flow-test-coverage: done
   config-flow: done

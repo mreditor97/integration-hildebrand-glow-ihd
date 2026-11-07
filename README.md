@@ -13,6 +13,8 @@ The device publishes the readings from your SMETS1/SMETS2 smart meter to your MQ
 - [Configuration](#configuration)
 - [Sensors](#sensors)
 - [Energy dashboard](#energy-dashboard)
+- [Use cases](#use-cases)
+- [Example automations](#example-automations)
 - [How the data updates](#how-the-data-updates)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
@@ -113,6 +115,65 @@ In **Settings → Dashboards → Energy**:
 - **Cost:** choose _Use an entity with current price_ and pick the matching **Import Unit Rate** sensor.
 
 The lifetime **Import** sensors give the most reliable statistics. The _Today_ sensors and _Cost (Today)_ reset every day, so a reset at an unexpected time can show up as a spike or a negative value.
+
+## Use cases
+
+- **Track your energy use and cost** in the Energy dashboard, with live electricity demand and the day's running cost.
+- **Spot high usage as it happens**, for example an appliance left on, from the live **Electricity: Power** sensor.
+- **Run things when power is cheap or demand is low**, using the unit rate and power sensors as conditions.
+- **Keep an eye on the meters themselves**: the device goes unavailable if the IHD stops publishing, and **Gas: Last Reading** shows when the gas meter last reported.
+- **Check your bill**: the unit rate and standing charge sensors show what your supplier has sent to the meter.
+
+## Example automations
+
+These use the entity IDs a new install gets for a device with the ID `AABBCCDDEEFF`. Change them to match yours, which you can find on the device page. You can build the same automations in the automation editor.
+
+Notify when the house draws more than 3 kW for 5 minutes:
+
+```yaml
+alias: High electricity demand
+triggers:
+  - trigger: numeric_state
+    entity_id: sensor.aabbccddeeff_electricity_power
+    above: 3
+    for:
+      minutes: 5
+actions:
+  - action: notify.notify
+    data:
+      message: >-
+        Electricity demand has been over 3 kW for 5 minutes, it is now
+        {{ states('sensor.aabbccddeeff_electricity_power') }} kW.
+```
+
+Notify when the gas meter hasn't reported for 2 hours. This needs **Gas: Last Reading**, which is off by default, so turn it on from the device page first:
+
+```yaml
+alias: Gas meter stopped reporting
+triggers:
+  - trigger: state
+    entity_id: sensor.aabbccddeeff_gas_last_reading
+    for:
+      hours: 2
+actions:
+  - action: notify.notify
+    data:
+      message: The gas meter hasn't sent a reading for 2 hours.
+```
+
+Send the day's electricity cost every evening:
+
+```yaml
+alias: Daily electricity cost
+triggers:
+  - trigger: time
+    at: "21:00:00"
+actions:
+  - action: notify.notify
+    data:
+      message: >-
+        Electricity so far today: £{{ states('sensor.aabbccddeeff_electricity_cost_today') }}.
+```
 
 ## How the data updates
 
