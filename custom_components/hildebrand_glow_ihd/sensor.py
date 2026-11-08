@@ -24,6 +24,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.restore_state import RestoredExtraData, RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -39,6 +40,7 @@ from .const import (
 from .entity import GlowEntity
 from .helpers import (
     InvalidValueError,
+    PeriodVolume,
     calculate_cost_today,
     determine_last_reset,
     device_versions,
@@ -88,6 +90,9 @@ class GlowSensorEntityDescription(SensorEntityDescription):
     error_values: tuple[float, ...] = ()
     # Set for sensors that reset, so last_reset can be reported
     meter_interval: MeterInterval | None = None
+    # Set for the gas period volume sensors. When the IHD doesn't report the
+    # period's volume in m³, it is worked out from the lifetime volume.
+    volume_interval: MeterInterval | None = None
 
 
 STATE_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
@@ -278,6 +283,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
         value_fn=lambda js: gas_volume(js, "dayvol", "dayweekmonthvolunits"),
+        volume_interval=MeterInterval.DAY,
     ),
     GlowSensorEntityDescription(
         key="gas_import_volume_week",
@@ -287,6 +293,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
         value_fn=lambda js: gas_volume(js, "weekvol", "dayweekmonthvolunits"),
+        volume_interval=MeterInterval.WEEK,
     ),
     GlowSensorEntityDescription(
         key="gas_import_volume_month",
@@ -296,6 +303,7 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
         value_fn=lambda js: gas_volume(js, "monthvol", "dayweekmonthvolunits"),
+        volume_interval=MeterInterval.MONTH,
     ),
     GlowSensorEntityDescription(
         key="gas_import_today",
@@ -456,7 +464,11 @@ class GlowMessageHandler:
         self._settings.devices[device_id] = device_state
         sensors = {
             kind: [
-                GlowSensor(device_id, description, self._time_zones[kind], device_state)
+                (
+                    GlowPeriodVolumeSensor
+                    if description.volume_interval is not None
+                    else GlowSensor
+                )(device_id, description, self._time_zones[kind], device_state)
                 for description in descriptions
             ]
             for kind, descriptions in DESCRIPTIONS_BY_KIND.items()
@@ -676,12 +688,10 @@ class GlowSensor(GlowEntity, SensorEntity):
             _LOGGER.info("Usable values for %s again", self.unique_id)
         return value
 
-    @callback
-    def async_process_message(self, message: GlowMessage) -> None:
-        """Update the sensor from a Glow message."""
-        description = self.entity_description
+    def _read_value(self, message: GlowMessage) -> Any:
+        """Return the sensor's value from a message, or None if it has none."""
         try:
-            value = description.value_fn(message.payload)
+            return self.entity_description.value_fn(message.payload)
         except (AttributeError, IndexError, KeyError, TypeError, ValueError) as err:
             # A field this sensor depends on is missing or null in the payload
             # (e.g. no tariff data from the supplier). Report the state as
@@ -692,7 +702,20 @@ class GlowSensor(GlowEntity, SensorEntity):
                 self.unique_id,
                 err,
             )
-            value = None
+            return None
+
+    @callback
+    def _async_set_value(self, value: Any) -> None:
+        """Set the sensor's state from a reading."""
+        self._attr_native_value = self._validated(value)
+        self._has_reading = True
+        self.async_write_state_if_added()
+
+    @callback
+    def async_process_message(self, message: GlowMessage) -> None:
+        """Update the sensor from a Glow message."""
+        description = self.entity_description
+        value = self._read_value(message)
 
         if description.ignore_zero_values and value == 0:
             _LOGGER.debug("Ignored value of 0 for %s", self.unique_id)
@@ -704,7 +727,6 @@ class GlowSensor(GlowEntity, SensorEntity):
                 self.unique_id,
             )
             value = None
-        self._attr_native_value = self._validated(value)
 
         if (
             description.meter_interval is not None
@@ -717,5 +739,95 @@ class GlowSensor(GlowEntity, SensorEntity):
                 description.meter_interval,
             )
 
-        self._has_reading = True
-        self.async_write_state_if_added()
+        self._async_set_value(value)
+
+
+class GlowPeriodVolumeSensor(GlowSensor, RestoreEntity):
+    """A gas volume for the day, week or month.
+
+    The IHD's own figure is used when it is in m³. Some IHDs report it in kWh
+    instead, then it is worked out from the lifetime volume, which is in m³.
+    The lifetime reading at the start of the period is stored across
+    restarts.
+    """
+
+    def __init__(
+        self,
+        device_id: str,
+        description: GlowSensorEntityDescription,
+        time_zone: tzinfo | None,
+        device_state: GlowDeviceState,
+    ) -> None:
+        """Initialise the sensor."""
+        super().__init__(device_id, description, time_zone, device_state)
+        self._period_volume = PeriodVolume()
+        # Messages arrive before the stored state is read when the sensor is
+        # added, the latest one is kept until then
+        self._restored = False
+        self._pending_message: GlowMessage | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Read the stored period, then any message that came before it."""
+        await super().async_added_to_hass()
+        if (data := await self.async_get_last_extra_data()) is not None:
+            self._period_volume = PeriodVolume.from_dict(data.as_dict())
+        self._restored = True
+        if (message := self._pending_message) is not None:
+            self._pending_message = None
+            self.async_process_message(message)
+
+    @property
+    def extra_restore_state_data(self) -> RestoredExtraData:
+        """Return the period's start reading, to store across restarts."""
+        return RestoredExtraData(self._period_volume.as_dict())
+
+    def _lifetime_volume(self, message: GlowMessage) -> float | None:
+        """Return the lifetime volume in m³, or None if there is no usable one."""
+        try:
+            value = validate_state_value(
+                gas_volume(message.payload, "cumulativevol", "cumulativevolunits"),
+                numeric=True,
+                timestamp=False,
+            )
+        except (
+            AttributeError,
+            IndexError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            return None
+        if value is None or float(value) <= 0:
+            # 0 is what the IHD sends when it can't read the meter
+            return None
+        return float(value)
+
+    @callback
+    def async_process_message(self, message: GlowMessage) -> None:
+        """Update the sensor from a Glow message."""
+        if not self._restored:
+            self._pending_message = message
+            return
+        interval = self.entity_description.volume_interval
+        if TYPE_CHECKING:
+            assert interval is not None
+        calculated = None
+        volume = self._lifetime_volume(message)
+        if volume is not None and self._time_zone is not None:
+            reading_time = message.timestamp or dt_util.utcnow()
+            calculated = self._period_volume.update(
+                reading_time,
+                volume,
+                determine_last_reset(reading_time, self._time_zone, interval),
+            )
+            if calculated is None:
+                _LOGGER.debug(
+                    "Ignored a reading for %s older than the latest one",
+                    self.unique_id,
+                )
+                return
+        # The calculation is kept up to date even when the IHD's own figure
+        # is used, so it can take over if the IHD stops sending it in m³
+        if (value := self._read_value(message)) is None:
+            value = calculated
+        self._async_set_value(value)

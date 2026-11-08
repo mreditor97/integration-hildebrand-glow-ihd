@@ -88,12 +88,14 @@ Home Assistant shows each sensor after its device's name, e.g. **Home Electricit
 | Gas: Import                                      | kWh     | Lifetime meter reading                      |
 | Gas: Import (Today / This week / This month)     | kWh     | Reset by the meter                          |
 | Gas: Import Vol                                  | m³      | Lifetime volume reading                     |
-| Gas: Import Vol (Today / This week / This month) | m³      | Reset by the meter                          |
+| Gas: Import Vol (Today / This week / This month) | m³      | Reset by the meter, or worked out (below)   |
 | Gas: Import Unit Rate                            | GBP/kWh | Current unit rate, no long-term statistics  |
 | Gas: Import Standing Charge                      | GBP     | Daily standing charge, no long-term stats   |
 | Gas: Cost (Today)                                | GBP     | Standing charge + today's usage × unit rate |
 
 There is no live gas power sensor: the IHD stopped publishing gas power in software update 1.8.13 (June 2022).
+
+Some IHDs send the day, week and month gas volumes in kWh rather than m³. kWh can't be turned into m³ without the gas's calorific value, so the integration works these volumes out from **Gas: Import Vol** instead: the lifetime reading now, less the reading when the day, week or month started in the gas meter's time zone (set in the integration's options). Weeks start on Monday. The reading at each start is kept across restarts. If Home Assistant was off when a period started, the gas used while it was off is shared between the two periods by time. The first day, week and month after you add the integration count from its first gas reading, so they are short. When the IHD sends the volumes in m³, its own figures are used.
 
 ### Diagnostics
 
@@ -215,7 +217,7 @@ logger:
 ## Known limitations
 
 - Prices are always shown in GBP, the currency the device reports for UK meters.
-- Gas volume sensors are unknown when the device reports the volume fields in kWh, because kWh can't be converted to m³ without the calorific value.
+- When the device reports the day, week and month gas volumes in kWh, they are worked out from the lifetime volume, see [Gas](#gas). The first period after setup is short, and periods that started while Home Assistant was off are estimates.
 - There is no gas power sensor, see [Gas](#gas).
 - Discovery only finds devices using the default `glow` topic prefix. Add other prefixes by hand.
 - A device's sensors appear only after its first message following a restart or reload.

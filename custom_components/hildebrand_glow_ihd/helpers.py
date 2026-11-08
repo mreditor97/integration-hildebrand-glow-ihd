@@ -269,3 +269,125 @@ def determine_last_reset(
         case MeterInterval.YEAR:
             last_reset = meter_midnight.replace(day=1, month=1)
     return last_reset.astimezone(UTC)
+
+
+# Gas meters report to 3 decimal places of a cubic metre
+GAS_VOLUME_PRECISION = 3
+
+
+@dataclass(slots=True)
+class PeriodVolume:
+    """Works out a period's gas volume from the lifetime volume reading.
+
+    Some IHDs report the day, week and month volumes in kWh, which can't be
+    turned into m³. The lifetime volume is still in m³, so a period's volume
+    is the lifetime reading now less its reading when the period started.
+
+    The reading at the start of a period is worked out from the last reading
+    before it and the first one after it. A meter sends a reading every half
+    hour or so, so they are close together, unless Home Assistant was off
+    across the start. Then the gas used while it was off is shared between
+    the two periods by time, as if it had been used at a steady rate.
+
+    A period that started before the first reading is counted from that
+    reading, so the first day, week and month after an install are short.
+    """
+
+    # When the current period started, in UTC
+    period_start: datetime | None = None
+    # The lifetime reading when the current period started
+    start_volume: float | None = None
+    # The latest lifetime reading and when it was taken
+    last_volume: float | None = None
+    last_time: datetime | None = None
+
+    def update(
+        self,
+        reading_time: datetime,
+        volume: float,
+        period_start: datetime,
+    ) -> float | None:
+        """Add a lifetime reading and return the period's volume so far.
+
+        Returns None for a reading older than the latest one.
+        """
+        last_time, last_volume = self.last_time, self.last_volume
+        if last_time is not None and reading_time < last_time:
+            return None
+        if (
+            self.period_start != period_start
+            or self.start_volume is None
+            or last_volume is None
+        ):
+            self.period_start = period_start
+            self.start_volume = volume
+            if (
+                last_time is not None
+                and last_volume is not None
+                and last_time < period_start
+                and last_volume <= volume
+            ):
+                # Share the gas used between the two readings by time
+                share = (period_start - last_time) / (reading_time - last_time)
+                self.start_volume = last_volume + (volume - last_volume) * share
+        elif volume < last_volume:
+            # The lifetime reading went backwards, e.g. a new meter. Keep the
+            # period's volume so far and count on from the new reading.
+            self.start_volume = volume - (last_volume - self.start_volume)
+        self.last_time, self.last_volume = reading_time, volume
+        return round(max(volume - self.start_volume, 0.0), GAS_VOLUME_PRECISION)
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the state to store across restarts."""
+        return {
+            "period_start": _isoformat(self.period_start),
+            "start_volume": self.start_volume,
+            "last_volume": self.last_volume,
+            "last_time": _isoformat(self.last_time),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PeriodVolume:
+        """Return the state stored before a restart, or a new one if invalid."""
+        try:
+            restored = cls(
+                period_start=_parse_utc(data.get("period_start")),
+                start_volume=_optional_float(data.get("start_volume")),
+                last_volume=_optional_float(data.get("last_volume")),
+                last_time=_parse_utc(data.get("last_time")),
+            )
+        except (TypeError, ValueError):
+            return cls()
+        if None in (restored.period_start, restored.start_volume) or None in (
+            restored.last_time,
+            restored.last_volume,
+        ):
+            return cls()
+        return restored
+
+
+def _isoformat(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        msg = f"{value!r} has no time zone"
+        raise ValueError(msg)
+    return parsed.astimezone(UTC)
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        msg = f"{value!r} is not a number"
+        raise TypeError(msg)
+    number = float(value)
+    if not isfinite(number):
+        msg = f"{value!r} is not a finite number"
+        raise ValueError(msg)
+    return number

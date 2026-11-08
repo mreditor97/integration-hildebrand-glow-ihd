@@ -8,13 +8,16 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import State
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import restore_state as rs
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_mqtt_message,
     async_fire_time_changed,
+    mock_restore_cache_with_extra_data,
 )
 
 from custom_components.hildebrand_glow_ihd.const import AVAILABILITY_TIMEOUT, DOMAIN
@@ -73,17 +76,18 @@ EXPECTED_SENSORS: list[tuple[str, str, str]] = [
     ("electricity_cost_today", "electricity_cost_today", "0.9"),
     ("gas_import", "gas_import", "17940.852"),
     ("gas_import_vol", "gas_import_vol", "1500.2"),
-    # The IHD reports these volumes in kWh, so they're unknown
-    ("gas_import_vol_today", "gas_import_vol_today", STATE_UNKNOWN),
+    # The IHD reports these volumes in kWh, so they're worked out from the
+    # lifetime volume, counting from the first reading
+    ("gas_import_vol_today", "gas_import_vol_today", "0.0"),
     (
         "gas_import_vol_this_week",
         "gas_import_vol_this_week",
-        STATE_UNKNOWN,
+        "0.0",
     ),
     (
         "gas_import_vol_this_month",
         "gas_import_vol_this_month",
-        STATE_UNKNOWN,
+        "0.0",
     ),
     ("gas_import_today", "gas_import_today", "11.128"),
     ("gas_import_this_week", "gas_import_this_week", "104.749"),
@@ -878,3 +882,135 @@ async def test_unavailable_until_first_reading(
     gas = hass.states.get(_entity_id(hass, "gas_import"))
     assert gas is not None
     assert gas.state == STATE_UNAVAILABLE
+
+
+def _gas_payload(timestamp: str, volume: float, units: str = "kWh") -> dict[str, Any]:
+    """Return the test gas payload with another time and lifetime volume."""
+    payload: dict[str, Any] = json.loads(json.dumps(GAS_PAYLOAD))
+    payload["gasmeter"]["timestamp"] = timestamp
+    energy_import = payload["gasmeter"]["energy"]["import"]
+    energy_import["cumulativevol"] = volume
+    energy_import["dayweekmonthvolunits"] = units
+    return payload
+
+
+def _gas_period_states(hass: HomeAssistant) -> tuple[str, str, str]:
+    """Return the states of the gas volume today, this week and this month."""
+    states = []
+    for suffix in ("today", "this_week", "this_month"):
+        state = hass.states.get(_entity_id(hass, f"gas_import_vol_{suffix}"))
+        assert state is not None
+        states.append(state.state)
+    return (states[0], states[1], states[2])
+
+
+async def test_gas_period_volumes_calculated(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """Volumes the IHD reports in kWh are worked out from the lifetime one."""
+    await _setup(hass, config_entry)
+    # Saturday 11 June 2022, the gas meter is in UTC
+    _publish(hass, GAS_TOPIC, _gas_payload("2022-06-11T20:00:00Z", 1500.2))
+    await hass.async_block_till_done()
+    assert _gas_period_states(hass) == ("0.0", "0.0", "0.0")
+
+    _publish(hass, GAS_TOPIC, _gas_payload("2022-06-11T23:45:00Z", 1501.0))
+    await hass.async_block_till_done()
+    assert _gas_period_states(hass) == ("0.8", "0.8", "0.8")
+
+    # Half of the gas used between the readings either side of midnight is
+    # Sunday's. The week starts on Monday, so it carries on.
+    _publish(hass, GAS_TOPIC, _gas_payload("2022-06-12T00:15:00Z", 1501.2))
+    await hass.async_block_till_done()
+    assert _gas_period_states(hass) == ("0.1", "1.0", "1.0")
+
+    # An older reading is ignored
+    _publish(hass, GAS_TOPIC, _gas_payload("2022-06-12T00:05:00Z", 1501.1))
+    await hass.async_block_till_done()
+    assert _gas_period_states(hass) == ("0.1", "1.0", "1.0")
+
+    # A reading of 0 is the IHD not reading the meter
+    _publish(hass, GAS_TOPIC, _gas_payload("2022-06-12T00:30:00Z", 0))
+    await hass.async_block_till_done()
+    assert _gas_period_states(hass) == (STATE_UNKNOWN,) * 3
+
+    # So is a payload without the lifetime volume
+    payload = _gas_payload("2022-06-12T00:45:00Z", 1501.4)
+    del payload["gasmeter"]["energy"]["import"]["cumulativevol"]
+    _publish(hass, GAS_TOPIC, payload)
+    await hass.async_block_till_done()
+    assert _gas_period_states(hass) == (STATE_UNKNOWN,) * 3
+
+    # The volume is kept since the last good reading
+    _publish(hass, GAS_TOPIC, _gas_payload("2022-06-12T01:00:00Z", 1501.5))
+    await hass.async_block_till_done()
+    assert _gas_period_states(hass) == ("0.4", "1.3", "1.3")
+
+
+async def test_gas_period_volumes_from_ihd(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """The IHD's own volumes are used when it reports them in m³."""
+    await _setup(hass, config_entry)
+    _publish(hass, GAS_TOPIC, _gas_payload("2022-06-11T20:00:00Z", 1500.2, "m3"))
+    await hass.async_block_till_done()
+    assert _gas_period_states(hass) == ("1.1", "2.2", "3.3")
+
+
+async def test_gas_period_volumes_restored(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """The reading at the start of each period is kept across restarts."""
+    stored = {
+        "period_start": "2022-06-11T00:00:00+00:00",
+        "start_volume": 1499.0,
+        "last_volume": 1500.0,
+        "last_time": "2022-06-11T19:00:00+00:00",
+    }
+    mock_restore_cache_with_extra_data(
+        hass,
+        [
+            (State("sensor.home_gas_import_vol_today", "1.0"), stored),
+            (
+                State("sensor.home_gas_import_vol_this_week", "1.0"),
+                # Stored by a restart before the week started, then nothing
+                # was heard for 7 days
+                {
+                    **stored,
+                    "period_start": "2022-05-30T00:00:00+00:00",
+                    "last_time": "2022-06-05T20:00:00+00:00",
+                },
+            ),
+            (
+                State("sensor.home_gas_import_vol_this_month", "1.0"),
+                {"start_volume": "unusable"},
+            ),
+        ],
+    )
+    await _setup(hass, config_entry)
+    _publish(hass, GAS_TOPIC, _gas_payload("2022-06-12T20:00:00Z", 1502.6))
+    await hass.async_block_till_done()
+    # 2.6 m³ was used in the 25 hours since the last reading, today's share
+    # is the 20 hours since midnight. This week started 4 hours after the
+    # last reading 7 days ago, so 4 of those 168 hours are last week's. The
+    # month's stored state is unusable, so it counts from this reading.
+    assert _gas_period_states(hass) == ("2.08", "2.538", "0.0")
+
+    stored_states = {
+        stored_state.state.entity_id: stored_state.extra_data
+        for stored_state in rs.async_get(hass).async_get_stored_states()
+    }
+    extra_data = stored_states["sensor.home_gas_import_vol_today"]
+    assert extra_data is not None
+    assert extra_data.as_dict() == {
+        "period_start": "2022-06-12T00:00:00+00:00",
+        "start_volume": pytest.approx(1500.52),
+        "last_volume": 1502.6,
+        "last_time": "2022-06-12T20:00:00+00:00",
+    }
