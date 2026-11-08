@@ -76,7 +76,7 @@ Home Assistant shows each sensor after its device's name, e.g. **Home Electricit
 | Electricity: Import                                  | kWh     | Lifetime meter reading                      |
 | Electricity: Import (Today / This week / This month) | kWh     | Reset by the meter                          |
 | Electricity: Export                                  | kWh     | Lifetime export reading                     |
-| Electricity: Power                                   | kW      | Current demand                              |
+| Electricity: Power                                   | W       | Current demand                              |
 | Electricity: Import Unit Rate                        | GBP/kWh | Current unit rate, no long-term statistics  |
 | Electricity: Import Standing Charge                  | GBP     | Daily standing charge, no long-term stats   |
 | Electricity: Cost (Today)                            | GBP     | Standing charge + today's usage × unit rate |
@@ -92,6 +92,8 @@ Home Assistant shows each sensor after its device's name, e.g. **Home Electricit
 | Gas: Import Unit Rate                            | GBP/kWh | Current unit rate, no long-term statistics  |
 | Gas: Import Standing Charge                      | GBP     | Daily standing charge, no long-term stats   |
 | Gas: Cost (Today)                                | GBP     | Standing charge + today's usage × unit rate |
+
+**Electricity: Power** is shown in W on new installs. A power sensor you already have keeps the unit it had, kW unless you changed it. To show it in W, open the sensor's settings and set **Unit of measurement** to W. Automations and dashboards that compare it with a number in kW then need that number in W.
 
 There is no live gas power sensor: the IHD stopped publishing gas power in software update 1.8.13 (June 2022).
 
@@ -129,14 +131,14 @@ The lifetime **Import** sensors give the most reliable statistics. The _Today_ s
 
 These use the entity IDs a new install named `Home` gets. Change them to match yours, which you can find on the device page. You can build the same automations in the automation editor.
 
-Notify when the house draws more than 3 kW for 5 minutes:
+Notify when the house draws more than 3 kW (3000 W) for 5 minutes:
 
 ```yaml
 alias: High electricity demand
 triggers:
   - trigger: numeric_state
     entity_id: sensor.home_electricity_power
-    above: 3
+    above: 3000
     for:
       minutes: 5
 actions:
@@ -144,7 +146,7 @@ actions:
     data:
       message: >-
         Electricity demand has been over 3 kW for 5 minutes, it is now
-        {{ states('sensor.home_electricity_power') }} kW.
+        {{ states('sensor.home_electricity_power') }} W.
 ```
 
 Notify when the gas meter hasn't reported for 2 hours. This needs **Gas: Last Reading**, which is off by default, so turn it on from the device page first:
