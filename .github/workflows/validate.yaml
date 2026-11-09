@@ -3,7 +3,14 @@ name: Validate
 
 # yamllint disable-line rule:truthy
 on:
+  # Pull requests are checked by the pull_request trigger, so pushes only run
+  # on master and on Renovate's branches. Renovate merges its updates straight
+  # into master without a pull request once its branch's checks pass, so its
+  # branches still need checks of their own
   push:
+    branches:
+      - master
+      - 'renovate/**'
   pull_request:
   schedule:
     # Daily, so a change in Home Assistant's or the Home Assistant
@@ -13,6 +20,12 @@ on:
 
 permissions:
   contents: read
+
+# A new push to a pull request cancels the checks still running for the
+# previous one
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   hassfest:
