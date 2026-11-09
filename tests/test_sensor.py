@@ -69,7 +69,7 @@ EXPECTED_SENSORS: list[tuple[str, str, str]] = [
         "electricity_import_standing_charge",
         "0.2403",
     ),
-    ("electricity_power", "electricity_power", "0.951"),
+    ("electricity_power", "electricity_power", "951.0"),
     ("electricity_cost_today", "electricity_cost_today", "0.9"),
     ("gas_import", "gas_import", "17940.852"),
     ("gas_import_vol", "gas_import_vol", "1500.2"),
@@ -425,6 +425,46 @@ async def test_reload_and_unload(
     assert state.state == STATE_UNAVAILABLE
 
 
+async def test_power_is_shown_in_watts(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """The IHD reports power in kW, a new sensor shows it in W."""
+    await _setup(hass, config_entry)
+    await _publish_all(hass)
+    entity_id = _entity_id(hass, "electricity_power")
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.attributes["unit_of_measurement"] == "W"
+    entry = er.async_get(hass).async_get(entity_id)
+    assert entry is not None
+    assert entry.options["sensor"]["suggested_display_precision"] == 0
+
+
+async def test_existing_power_sensor_keeps_kilowatts(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """A power sensor made by an earlier version keeps showing kW."""
+    config_entry.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        DOMAIN,
+        f"{DEVICE_ID.lower()}_electricity_power",
+        suggested_object_id="home_electricity_power",
+        config_entry=config_entry,
+        unit_of_measurement="kW",
+    )
+    await _setup(hass, config_entry)
+    await _publish_all(hass)
+    state = hass.states.get(_entity_id(hass, "electricity_power"))
+    assert state is not None
+    assert state.attributes["unit_of_measurement"] == "kW"
+    assert state.state == "0.951"
+
+
 async def test_price_sensors_have_no_state_class(
     hass: HomeAssistant,
     mqtt_mock: MqttMockHAClient,  # noqa: ARG001
@@ -641,7 +681,7 @@ async def test_unusable_value_logged_once(
     await hass.async_block_till_done()
     state = hass.states.get(entity_id)
     assert state is not None
-    assert state.state == "0.951"
+    assert state.state == "951.0"
     assert "Usable values for" in caplog.text
 
 
@@ -658,7 +698,7 @@ async def test_numeric_text_is_used(
     await hass.async_block_till_done()
     state = hass.states.get(_entity_id(hass, "electricity_power"))
     assert state is not None
-    assert state.state == "1.5"
+    assert state.state == "1500.0"
 
 
 async def test_unreadable_payload_logged_once(
