@@ -80,6 +80,7 @@ Home Assistant shows each sensor after its device's name, e.g. **Home Electricit
 | Electricity: Import Unit Rate                        | GBP/kWh | Current unit rate, no long-term statistics  |
 | Electricity: Import Standing Charge                  | GBP     | Daily standing charge, no long-term stats   |
 | Electricity: Cost (Today)                            | GBP     | Standing charge + today's usage × unit rate |
+| Electricity: Cost (This week / This month)           | GBP     | Sum of each day's cost, see below           |
 
 ### Gas
 
@@ -92,8 +93,11 @@ Home Assistant shows each sensor after its device's name, e.g. **Home Electricit
 | Gas: Import Unit Rate                            | GBP/kWh | Current unit rate, no long-term statistics  |
 | Gas: Import Standing Charge                      | GBP     | Daily standing charge, no long-term stats   |
 | Gas: Cost (Today)                                | GBP     | Standing charge + today's usage × unit rate |
+| Gas: Cost (This week / This month)               | GBP     | Sum of each day's cost, see below           |
 
 **Electricity: Power** is shown in W on new installs. A power sensor you already have keeps the unit it had, kW unless you changed it. To show it in W, open the sensor's settings and set **Unit of measurement** to W. Automations and dashboards that compare it with a number in kW then need that number in W.
+
+The IHD only reports the cost of the current day, so **Cost (This week)** and **Cost (This month)** add up each day's last **Cost (Today)**, standing charge included. Weeks start on Monday, like the meter's weekly totals. They start counting when the sensor is added, so the first week and month are short, and days or parts of days when Home Assistant isn't running can be missed. Use them instead of a Utility Meter helper on **Cost (Today)**: at midnight that cost falls to the day's standing charge rather than to 0, so a Utility Meter misses the standing charge every day.
 
 There is no live gas power sensor: the IHD stopped publishing gas power in software update 1.8.13 (June 2022).
 
@@ -199,6 +203,8 @@ mosquitto_sub -h <broker> -u <user> -P <password> -t 'glow/#' -v
 You should see `glow/<device id>/STATE`, `glow/<device id>/SENSOR/electricitymeter` and, if you have gas, `glow/<device id>/SENSOR/gasmeter`. If the topic prefix or device ID doesn't match your configuration, no sensors are created.
 
 **Prices or cost show as unknown.** The device publishes `null` prices until your supplier sends tariff data to the meter. This depends on the supplier, not on this integration.
+
+**This week's import is the same as today's.** On a Monday it should be, as the meter's week starts on Monday.
 
 **Daily values reset at 01:00 instead of midnight.** The meter resets its daily totals in UTC. Open the integration, select **Configure** and set that meter's time zone to `UTC` (see [Configuration](#configuration)).
 

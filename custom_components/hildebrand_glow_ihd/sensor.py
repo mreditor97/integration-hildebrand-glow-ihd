@@ -24,6 +24,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -39,6 +40,7 @@ from .const import (
 from .entity import GlowEntity
 from .helpers import (
     InvalidValueError,
+    PeriodCost,
     calculate_cost_today,
     determine_last_reset,
     device_versions,
@@ -88,6 +90,9 @@ class GlowSensorEntityDescription(SensorEntityDescription):
     error_values: tuple[float, ...] = ()
     # Set for sensors that reset, so last_reset can be reported
     meter_interval: MeterInterval | None = None
+    # Add up the day's cost from value_fn over the meter_interval, keeping
+    # each day's standing charge
+    period_cost: bool = False
 
 
 STATE_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
@@ -238,6 +243,30 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
         meter_interval=MeterInterval.DAY,
         value_fn=lambda js: calculate_cost_today(js["electricitymeter"]),
     ),
+    # The cost of the week and month so far, from the day's cost, as the IHD
+    # doesn't report them
+    GlowSensorEntityDescription(
+        key="electricity_cost_week",
+        translation_key="electricity_cost_week",
+        unique_id_name="Electricity: Cost (This week)",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="GBP",
+        state_class=SensorStateClass.TOTAL,
+        meter_interval=MeterInterval.WEEK,
+        period_cost=True,
+        value_fn=lambda js: calculate_cost_today(js["electricitymeter"]),
+    ),
+    GlowSensorEntityDescription(
+        key="electricity_cost_month",
+        translation_key="electricity_cost_month",
+        unique_id_name="Electricity: Cost (This month)",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="GBP",
+        state_class=SensorStateClass.TOTAL,
+        meter_interval=MeterInterval.MONTH,
+        period_cost=True,
+        value_fn=lambda js: calculate_cost_today(js["electricitymeter"]),
+    ),
     # Changes with every message, so it is off by default to keep it out of
     # the recorder unless it is wanted
     GlowSensorEntityDescription(
@@ -357,6 +386,28 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
         meter_interval=MeterInterval.DAY,
         value_fn=lambda js: calculate_cost_today(js["gasmeter"]),
     ),
+    GlowSensorEntityDescription(
+        key="gas_cost_week",
+        translation_key="gas_cost_week",
+        unique_id_name="Gas: Cost (This week)",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="GBP",
+        state_class=SensorStateClass.TOTAL,
+        meter_interval=MeterInterval.WEEK,
+        period_cost=True,
+        value_fn=lambda js: calculate_cost_today(js["gasmeter"]),
+    ),
+    GlowSensorEntityDescription(
+        key="gas_cost_month",
+        translation_key="gas_cost_month",
+        unique_id_name="Gas: Cost (This month)",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="GBP",
+        state_class=SensorStateClass.TOTAL,
+        meter_interval=MeterInterval.MONTH,
+        period_cost=True,
+        value_fn=lambda js: calculate_cost_today(js["gasmeter"]),
+    ),
     # Shows how old the gas readings are, gas meters report less often
     GlowSensorEntityDescription(
         key="gas_last_reading",
@@ -458,7 +509,12 @@ class GlowMessageHandler:
         self._settings.devices[device_id] = device_state
         sensors = {
             kind: [
-                GlowSensor(device_id, description, self._time_zones[kind], device_state)
+                (GlowPeriodCostSensor if description.period_cost else GlowSensor)(
+                    device_id,
+                    description,
+                    self._time_zones[kind],
+                    device_state,
+                )
                 for description in descriptions
             ]
             for kind, descriptions in DESCRIPTIONS_BY_KIND.items()
@@ -678,6 +734,10 @@ class GlowSensor(GlowEntity, SensorEntity):
             _LOGGER.info("Usable values for %s again", self.unique_id)
         return value
 
+    def _state_value(self, value: Any, message: GlowMessage) -> Any:  # noqa: ARG002
+        """Return the state for a usable value read from a message."""
+        return value
+
     @callback
     def async_process_message(self, message: GlowMessage) -> None:
         """Update the sensor from a Glow message."""
@@ -706,7 +766,10 @@ class GlowSensor(GlowEntity, SensorEntity):
                 self.unique_id,
             )
             value = None
-        self._attr_native_value = self._validated(value)
+        self._attr_native_value = self._state_value(
+            self._validated(value),
+            message,
+        )
 
         if (
             description.meter_interval is not None
@@ -721,3 +784,71 @@ class GlowSensor(GlowEntity, SensorEntity):
 
         self._has_reading = True
         self.async_write_state_if_added()
+
+
+class PeriodCostExtraStoredData(ExtraStoredData):
+    """The running cost of a period, saved across restarts."""
+
+    def __init__(self, cost: PeriodCost) -> None:
+        """Initialise the stored data."""
+        self.cost = cost
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the cost as a dict that can be saved as JSON."""
+        return self.cost.as_dict()
+
+
+class GlowPeriodCostSensor(GlowSensor, RestoreEntity):
+    """The cost of the week or month so far, added up from the day's cost.
+
+    The cost is saved across restarts. Readings missed while Home Assistant
+    is stopped can't be added, so a restart over midnight counts the day
+    that ended at its last reading before the restart.
+    """
+
+    def __init__(
+        self,
+        device_id: str,
+        description: GlowSensorEntityDescription,
+        time_zone: tzinfo | None,
+        device_state: GlowDeviceState,
+    ) -> None:
+        """Initialise the sensor."""
+        super().__init__(device_id, description, time_zone, device_state)
+        self._cost = PeriodCost()
+
+    @property
+    def extra_restore_state_data(self) -> PeriodCostExtraStoredData:
+        """Return the running cost to save across restarts."""
+        return PeriodCostExtraStoredData(self._cost)
+
+    async def async_added_to_hass(self) -> None:
+        """Load the running cost saved before Home Assistant restarted."""
+        await super().async_added_to_hass()
+        if (extra_data := await self.async_get_last_extra_data()) is None:
+            return
+        self._cost.restore(PeriodCost.from_dict(extra_data.as_dict()))
+        if self._has_reading:
+            self._attr_native_value = self._cost.total
+            self.async_write_ha_state()
+
+    def _state_value(self, value: Any, message: GlowMessage) -> Any:
+        """Add the day's cost to the period's, and return the period's cost."""
+        interval = self.entity_description.meter_interval
+        if (
+            value is not None
+            and interval is not None
+            and self._time_zone is not None
+            and message.timestamp is not None
+        ):
+            self._cost.update(
+                float(value),
+                determine_last_reset(
+                    message.timestamp,
+                    self._time_zone,
+                    MeterInterval.DAY,
+                ),
+                determine_last_reset(message.timestamp, self._time_zone, interval),
+            )
+        # Without a day's cost, the period's cost so far is still known
+        return self._cost.total

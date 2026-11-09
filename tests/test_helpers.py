@@ -11,6 +11,7 @@ from custom_components.hildebrand_glow_ihd.const import MeterInterval, TopicKind
 from custom_components.hildebrand_glow_ihd.helpers import (
     GlowTopic,
     InvalidValueError,
+    PeriodCost,
     calculate_cost_today,
     determine_last_reset,
     entry_title,
@@ -338,3 +339,109 @@ def test_validate_state_value_invalid(
     """Values that can't be a sensor's state raise InvalidValueError."""
     with pytest.raises(InvalidValueError):
         validate_state_value(value, numeric=numeric, timestamp=timestamp)
+
+
+# Days and weeks for the PeriodCost tests, in UTC
+MONDAY = datetime(2026, 11, 2, tzinfo=UTC)
+TUESDAY = datetime(2026, 11, 3, tzinfo=UTC)
+WEDNESDAY = datetime(2026, 11, 4, tzinfo=UTC)
+NEXT_MONDAY = datetime(2026, 11, 9, tzinfo=UTC)
+
+
+def test_period_cost_keeps_each_days_standing_charge() -> None:
+    """A day's cost falling to its standing charge at midnight isn't lost."""
+    assert PeriodCost().total is None
+    cost = PeriodCost()
+    cost.update(0.48, MONDAY, MONDAY)
+    cost.update(1.36, MONDAY, MONDAY)
+    assert cost.total == 1.36
+    # Tuesday starts at the standing charge
+    cost.update(0.48, TUESDAY, MONDAY)
+    assert cost.total == 1.84
+    cost.update(1.45, TUESDAY, MONDAY)
+    assert cost.total == 2.81
+
+
+def test_period_cost_follows_the_days_cost_down() -> None:
+    """A lower unit rate can lower the day's cost, the total follows it."""
+    cost = PeriodCost()
+    cost.update(1.0, MONDAY, MONDAY)
+    cost.update(0.9, MONDAY, MONDAY)
+    assert cost.total == 0.9
+
+
+def test_period_cost_starts_again_each_period() -> None:
+    """A new week starts from the new week's first day's cost."""
+    cost = PeriodCost()
+    cost.update(1.36, MONDAY, MONDAY)
+    cost.update(1.40, TUESDAY, MONDAY)
+    cost.update(0.48, NEXT_MONDAY, NEXT_MONDAY)
+    assert cost.total == 0.48
+    assert cost.period_start == NEXT_MONDAY
+
+
+def test_period_cost_ignores_late_messages() -> None:
+    """A message for a day or period already moved on from is ignored."""
+    cost = PeriodCost()
+    cost.update(0.5, TUESDAY, MONDAY)
+    cost.update(9.0, MONDAY, MONDAY)
+    assert cost.total == 0.5
+    cost.update(0.48, NEXT_MONDAY, NEXT_MONDAY)
+    cost.update(9.0, WEDNESDAY, MONDAY)
+    assert cost.total == 0.48
+
+
+def test_period_cost_round_trip() -> None:
+    """A saved cost reads back the same, and a bad one reads back empty."""
+    cost = PeriodCost()
+    cost.update(1.36, MONDAY, MONDAY)
+    cost.update(0.5, TUESDAY, MONDAY)
+    assert PeriodCost.from_dict(json.loads(json.dumps(cost.as_dict()))) == cost
+    assert PeriodCost.from_dict(PeriodCost().as_dict()) == PeriodCost()
+    assert PeriodCost.from_dict({"period_start": "nonsense"}) == PeriodCost()
+    assert (
+        PeriodCost.from_dict(
+            {**cost.as_dict(), "day_start": "2026-11-03T00:00:00"},
+        )
+        == PeriodCost()
+    )
+    assert PeriodCost.from_dict({**cost.as_dict(), "day_cost": "x"}) == PeriodCost()
+
+
+def _saved(*readings: tuple[float, datetime, datetime]) -> PeriodCost:
+    """Return a PeriodCost after some readings."""
+    cost = PeriodCost()
+    for reading in readings:
+        cost.update(*reading)
+    return cost
+
+
+@pytest.mark.parametrize(
+    ("readings", "expected"),
+    [
+        # No reading since the restart, the saved cost is used as it is
+        ((), 1.84),
+        # A reading for the same day replaces the day's cost
+        (((0.6, TUESDAY, MONDAY),), 1.96),
+        # The saved day has finished, its last cost is kept
+        (((0.48, WEDNESDAY, MONDAY),), 2.32),
+        # A new period since, the saved cost is for the old one
+        (((0.48, NEXT_MONDAY, NEXT_MONDAY),), 0.48),
+    ],
+)
+def test_period_cost_restore(
+    readings: tuple[tuple[float, datetime, datetime], ...],
+    expected: float,
+) -> None:
+    """The cost saved before a restart is merged with readings since."""
+    saved = _saved((1.36, MONDAY, MONDAY), (0.48, TUESDAY, MONDAY))
+    cost = _saved(*readings)
+    cost.restore(saved)
+    assert cost.total == expected
+
+
+def test_period_cost_restore_nothing_saved() -> None:
+    """An empty saved cost changes nothing."""
+    cost = _saved((0.5, MONDAY, MONDAY))
+    cost.restore(PeriodCost())
+    assert cost.total == 0.5
