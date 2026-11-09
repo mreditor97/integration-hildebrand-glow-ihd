@@ -49,6 +49,12 @@
       "electricity_cost_today": {
         "default": "mdi:cash"
       },
+      "electricity_cost_week": {
+        "default": "mdi:cash"
+      },
+      "electricity_cost_month": {
+        "default": "mdi:cash"
+      },
       "electricity_last_reading": {
         "default": "mdi:clock-outline"
       },
@@ -83,6 +89,12 @@
         "default": "mdi:cash"
       },
       "gas_cost_today": {
+        "default": "mdi:cash"
+      },
+      "gas_cost_week": {
+        "default": "mdi:cash"
+      },
+      "gas_cost_month": {
         "default": "mdi:cash"
       },
       "gas_last_reading": {

@@ -212,7 +212,21 @@ def validate_state_value(value: Any, *, numeric: bool, timestamp: bool) -> Any:
 
 
 def calculate_cost_today(meter_data: dict[str, Any]) -> float | None:
-    """Return today's cost (standing charge + day kWh * unit rate).
+    """Return today's cost (standing charge + day kWh * unit rate)."""
+    return calculate_period_cost(meter_data, "day", 1)
+
+
+def calculate_period_cost(
+    meter_data: dict[str, Any],
+    field: str,
+    days: int,
+) -> float | None:
+    """Return a period's cost from the IHD's kWh for it.
+
+    The cost is the standing charge for each day of the period so far, plus
+    the period's kWh at the current unit rate. The IHD only reports the
+    current rates, so a period in which they changed is priced at the
+    current ones.
 
     The IHD publishes ``null`` for the unit rate and/or standing charge when
     the supplier has not sent tariff data to the meter. Rather than raising a
@@ -226,9 +240,25 @@ def calculate_cost_today(meter_data: dict[str, Any]) -> float | None:
     if unit_rate is None and standing_charge is None:
         return None
     return round(
-        (standing_charge or 0) + (energy_import.get("day") or 0) * (unit_rate or 0),
+        (standing_charge or 0) * days
+        + (energy_import.get(field) or 0) * (unit_rate or 0),
         2,
     )
+
+
+def days_into_interval(
+    message_time: datetime,
+    meter_time_zone: tzinfo,
+    meter_interval: MeterInterval,
+) -> int:
+    """Return which day of the meter's reset interval a message is from.
+
+    The first day of the interval is 1, so this is the number of standing
+    charges in the interval so far.
+    """
+    start = determine_last_reset(message_time, meter_time_zone, meter_interval)
+    start_date = start.astimezone(meter_time_zone).date()
+    return (message_time.astimezone(meter_time_zone).date() - start_date).days + 1
 
 
 def gas_volume(payload: dict[str, Any], field: str, units_field: str) -> float | None:

@@ -72,8 +72,11 @@ EXPECTED_SENSORS: list[tuple[str, str, str]] = [
         "electricity_import_standing_charge",
         "0.2403",
     ),
-    ("electricity_power", "electricity_power", "0.951"),
+    ("electricity_power", "electricity_power", "951.0"),
     ("electricity_cost_today", "electricity_cost_today", "0.9"),
+    # Sunday 12 June in the UK: 7 standing charges this week, 12 this month
+    ("electricity_cost_this_week", "electricity_cost_this_week", "8.76"),
+    ("electricity_cost_this_month", "electricity_cost_this_month", "17.56"),
     ("gas_import", "gas_import", "17940.852"),
     ("gas_import_vol", "gas_import_vol", "1500.2"),
     # The IHD reports these volumes in kWh, so they're worked out from the
@@ -100,6 +103,9 @@ EXPECTED_SENSORS: list[tuple[str, str, str]] = [
         "0.1785",
     ),
     ("gas_cost_today", "gas_cost_today", "0.18"),
+    # Saturday 11 June in UTC: 6 standing charges this week, 11 this month
+    ("gas_cost_this_week", "gas_cost_this_week", "1.07"),
+    ("gas_cost_this_month", "gas_cost_this_month", "1.96"),
 ]
 
 
@@ -429,6 +435,46 @@ async def test_reload_and_unload(
     assert state.state == STATE_UNAVAILABLE
 
 
+async def test_power_is_shown_in_watts(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """The IHD reports power in kW, a new sensor shows it in W."""
+    await _setup(hass, config_entry)
+    await _publish_all(hass)
+    entity_id = _entity_id(hass, "electricity_power")
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.attributes["unit_of_measurement"] == "W"
+    entry = er.async_get(hass).async_get(entity_id)
+    assert entry is not None
+    assert entry.options["sensor"]["suggested_display_precision"] == 0
+
+
+async def test_existing_power_sensor_keeps_kilowatts(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """A power sensor made by an earlier version keeps showing kW."""
+    config_entry.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        DOMAIN,
+        f"{DEVICE_ID.lower()}_electricity_power",
+        suggested_object_id="home_electricity_power",
+        config_entry=config_entry,
+        unit_of_measurement="kW",
+    )
+    await _setup(hass, config_entry)
+    await _publish_all(hass)
+    state = hass.states.get(_entity_id(hass, "electricity_power"))
+    assert state is not None
+    assert state.attributes["unit_of_measurement"] == "kW"
+    assert state.state == "0.951"
+
+
 async def test_price_sensors_have_no_state_class(
     hass: HomeAssistant,
     mqtt_mock: MqttMockHAClient,  # noqa: ARG001
@@ -645,7 +691,7 @@ async def test_unusable_value_logged_once(
     await hass.async_block_till_done()
     state = hass.states.get(entity_id)
     assert state is not None
-    assert state.state == "0.951"
+    assert state.state == "951.0"
     assert "Usable values for" in caplog.text
 
 
@@ -662,7 +708,7 @@ async def test_numeric_text_is_used(
     await hass.async_block_till_done()
     state = hass.states.get(_entity_id(hass, "electricity_power"))
     assert state is not None
-    assert state.state == "1.5"
+    assert state.state == "1500.0"
 
 
 async def test_unreadable_payload_logged_once(
@@ -882,6 +928,54 @@ async def test_unavailable_until_first_reading(
     gas = hass.states.get(_entity_id(hass, "gas_import"))
     assert gas is not None
     assert gas.state == STATE_UNAVAILABLE
+
+
+def _state(hass: HomeAssistant, entity_id: str) -> State:
+    """Return the state of an entity that must exist."""
+    state = hass.states.get(entity_id)
+    assert state is not None
+    return state
+
+
+async def test_period_cost(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """The week's and month's cost come from the IHD's kWh for them."""
+    await _setup(hass, config_entry)
+    payload: dict[str, Any] = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    meter = payload["electricitymeter"]
+    # Monday 9 November 2026, 20:32 in the UK (GMT)
+    meter["timestamp"] = "2026-11-09T20:32:19Z"
+    meter["energy"]["import"].update(
+        {
+            "day": 4.761,
+            "week": 4.761,
+            "month": 45.959,
+            "price": {"unitrate": 0.2061, "standingcharge": 0.4781},
+        },
+    )
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+
+    today = _state(hass, _entity_id(hass, "electricity_cost_today"))
+    week = _state(hass, _entity_id(hass, "electricity_cost_this_week"))
+    month = _state(hass, _entity_id(hass, "electricity_cost_this_month"))
+    # The first day of the week costs the same as today
+    assert today.state == week.state == "1.46"
+    assert week.attributes["last_reset"] == "2026-11-09T00:00:00+00:00"
+    # 9 standing charges and 45.959 kWh
+    assert month.state == "13.78"
+    assert month.attributes["last_reset"] == "2026-11-01T00:00:00+00:00"
+    assert month.attributes["state_class"] == "total"
+
+    # Without a timestamp the days can't be counted
+    del meter["timestamp"]
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+    week = _state(hass, _entity_id(hass, "electricity_cost_this_week"))
+    assert week.state == STATE_UNKNOWN
 
 
 def _gas_payload(timestamp: str, volume: float, units: str = "kWh") -> dict[str, Any]:
