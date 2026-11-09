@@ -1,7 +1,7 @@
 """Tests for the integration's helpers."""
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -11,6 +11,7 @@ from custom_components.hildebrand_glow_ihd.const import MeterInterval, TopicKind
 from custom_components.hildebrand_glow_ihd.helpers import (
     GlowTopic,
     InvalidValueError,
+    PeriodVolume,
     calculate_cost_today,
     calculate_period_cost,
     days_into_interval,
@@ -340,6 +341,111 @@ def test_validate_state_value_invalid(
     """Values that can't be a sensor's state raise InvalidValueError."""
     with pytest.raises(InvalidValueError):
         validate_state_value(value, numeric=numeric, timestamp=timestamp)
+
+
+def _utc(text: str) -> datetime:
+    return datetime.fromisoformat(text).replace(tzinfo=UTC)
+
+
+DAY_1 = _utc("2026-11-07T00:00:00")
+DAY_2 = _utc("2026-11-08T00:00:00")
+
+
+def test_period_volume_counts_from_first_reading() -> None:
+    """A period that started before the first reading counts from it."""
+    period = PeriodVolume()
+    assert period.update(_utc("2026-11-07T12:00:00"), 3620.5, DAY_1) == 0.0
+    assert period.update(_utc("2026-11-07T12:30:00"), 3621.0, DAY_1) == 0.5
+    assert period.update(_utc("2026-11-07T23:30:00"), 3622.817, DAY_1) == 2.317
+
+
+def test_period_volume_new_period() -> None:
+    """A new period starts from the reading at its start."""
+    period = PeriodVolume()
+    period.update(_utc("2026-11-07T12:00:00"), 3620.0, DAY_1)
+    period.update(_utc("2026-11-07T23:45:00"), 3621.0, DAY_1)
+    # 15 minutes either side of midnight, half of the 0.2 m³ is today's
+    assert period.update(_utc("2026-11-08T00:15:00"), 3621.2, DAY_2) == 0.1
+    assert period.update(_utc("2026-11-08T01:00:00"), 3621.5, DAY_2) == 0.4
+
+
+def test_period_volume_shares_gap_by_time() -> None:
+    """Gas used while nothing was heard is shared between periods by time."""
+    period = PeriodVolume()
+    period.update(_utc("2026-11-07T18:00:00"), 3620.0, DAY_1)
+    # Nothing heard for 12 hours, 6 of them today
+    assert period.update(_utc("2026-11-08T06:00:00"), 3622.0, DAY_2) == 1.0
+
+
+def test_period_volume_reading_goes_backwards() -> None:
+    """A lifetime reading that goes backwards keeps the period's volume."""
+    period = PeriodVolume()
+    period.update(_utc("2026-11-08T01:00:00"), 3620.0, DAY_2)
+    period.update(_utc("2026-11-08T02:00:00"), 3621.0, DAY_2)
+    assert period.update(_utc("2026-11-08T03:00:00"), 5.0, DAY_2) == 1.0
+    assert period.update(_utc("2026-11-08T04:00:00"), 5.5, DAY_2) == 1.5
+    # A backwards reading across a reset starts the new period from it
+    day_3 = DAY_2 + timedelta(days=1)
+    assert period.update(_utc("2026-11-09T01:00:00"), 1.0, day_3) == 0.0
+
+
+def test_period_volume_ignores_older_reading() -> None:
+    """A reading older than the latest one is ignored."""
+    period = PeriodVolume()
+    period.update(_utc("2026-11-08T02:00:00"), 3621.0, DAY_2)
+    assert period.update(_utc("2026-11-08T01:00:00"), 3620.0, DAY_2) is None
+    assert period.update(_utc("2026-11-08T03:00:00"), 3621.5, DAY_2) == 0.5
+
+
+def test_period_volume_round_trip() -> None:
+    """The stored state is read back the same."""
+    period = PeriodVolume()
+    period.update(_utc("2026-11-08T01:00:00"), 3620.0, DAY_2)
+    period.update(_utc("2026-11-08T02:00:00"), 3621.0, DAY_2)
+    stored = json.loads(json.dumps(period.as_dict()))
+    assert PeriodVolume.from_dict(stored) == period
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {},
+        {"period_start": "2026-11-08T00:00:00+00:00"},
+        {
+            "period_start": "not a time",
+            "start_volume": 1,
+            "last_volume": 1,
+            "last_time": "2026-11-08T00:00:00+00:00",
+        },
+        {
+            "period_start": "2026-11-08T00:00:00",
+            "start_volume": 1,
+            "last_volume": 1,
+            "last_time": "2026-11-08T00:00:00+00:00",
+        },
+        {
+            "period_start": "2026-11-08T00:00:00+00:00",
+            "start_volume": "nan",
+            "last_volume": 1,
+            "last_time": "2026-11-08T00:00:00+00:00",
+        },
+        {
+            "period_start": "2026-11-08T00:00:00+00:00",
+            "start_volume": True,
+            "last_volume": 1,
+            "last_time": "2026-11-08T00:00:00+00:00",
+        },
+        {
+            "period_start": 5,
+            "start_volume": 1,
+            "last_volume": 1,
+            "last_time": "2026-11-08T00:00:00+00:00",
+        },
+    ],
+)
+def test_period_volume_invalid_stored_state(data: dict[str, Any]) -> None:
+    """Unusable stored state starts afresh."""
+    assert PeriodVolume.from_dict(data) == PeriodVolume()
 
 
 def test_calculate_period_cost() -> None:
