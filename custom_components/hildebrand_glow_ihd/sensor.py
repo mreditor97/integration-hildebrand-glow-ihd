@@ -40,6 +40,8 @@ from .entity import GlowEntity
 from .helpers import (
     InvalidValueError,
     calculate_cost_today,
+    calculate_period_cost,
+    days_into_interval,
     determine_last_reset,
     device_versions,
     gas_volume,
@@ -88,6 +90,9 @@ class GlowSensorEntityDescription(SensorEntityDescription):
     error_values: tuple[float, ...] = ()
     # Set for sensors that reset, so last_reset can be reported
     meter_interval: MeterInterval | None = None
+    # Used instead of value_fn by sensors whose value depends on how many
+    # days of their meter_interval have passed, called with that number
+    days_value_fn: Callable[[dict[str, Any], int], Any] | None = None
 
 
 STATE_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
@@ -238,6 +243,37 @@ ELECTRICITY_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
         meter_interval=MeterInterval.DAY,
         value_fn=lambda js: calculate_cost_today(js["electricitymeter"]),
     ),
+    # The IHD reports the week's and month's kWh but not their cost
+    GlowSensorEntityDescription(
+        key="electricity_cost_week",
+        translation_key="electricity_cost_week",
+        unique_id_name="Electricity: Cost (This week)",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="GBP",
+        state_class=SensorStateClass.TOTAL,
+        meter_interval=MeterInterval.WEEK,
+        value_fn=lambda _js: None,
+        days_value_fn=lambda js, days: calculate_period_cost(
+            js["electricitymeter"],
+            "week",
+            days,
+        ),
+    ),
+    GlowSensorEntityDescription(
+        key="electricity_cost_month",
+        translation_key="electricity_cost_month",
+        unique_id_name="Electricity: Cost (This month)",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="GBP",
+        state_class=SensorStateClass.TOTAL,
+        meter_interval=MeterInterval.MONTH,
+        value_fn=lambda _js: None,
+        days_value_fn=lambda js, days: calculate_period_cost(
+            js["electricitymeter"],
+            "month",
+            days,
+        ),
+    ),
     # Changes with every message, so it is off by default to keep it out of
     # the recorder unless it is wanted
     GlowSensorEntityDescription(
@@ -357,6 +393,36 @@ GAS_SENSORS: tuple[GlowSensorEntityDescription, ...] = (
         meter_interval=MeterInterval.DAY,
         value_fn=lambda js: calculate_cost_today(js["gasmeter"]),
     ),
+    GlowSensorEntityDescription(
+        key="gas_cost_week",
+        translation_key="gas_cost_week",
+        unique_id_name="Gas: Cost (This week)",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="GBP",
+        state_class=SensorStateClass.TOTAL,
+        meter_interval=MeterInterval.WEEK,
+        value_fn=lambda _js: None,
+        days_value_fn=lambda js, days: calculate_period_cost(
+            js["gasmeter"],
+            "week",
+            days,
+        ),
+    ),
+    GlowSensorEntityDescription(
+        key="gas_cost_month",
+        translation_key="gas_cost_month",
+        unique_id_name="Gas: Cost (This month)",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="GBP",
+        state_class=SensorStateClass.TOTAL,
+        meter_interval=MeterInterval.MONTH,
+        value_fn=lambda _js: None,
+        days_value_fn=lambda js, days: calculate_period_cost(
+            js["gasmeter"],
+            "month",
+            days,
+        ),
+    ),
     # Shows how old the gas readings are, gas meters report less often
     GlowSensorEntityDescription(
         key="gas_last_reading",
@@ -458,7 +524,12 @@ class GlowMessageHandler:
         self._settings.devices[device_id] = device_state
         sensors = {
             kind: [
-                GlowSensor(device_id, description, self._time_zones[kind], device_state)
+                GlowSensor(
+                    device_id,
+                    description,
+                    self._time_zones[kind],
+                    device_state,
+                )
                 for description in descriptions
             ]
             for kind, descriptions in DESCRIPTIONS_BY_KIND.items()
@@ -678,12 +749,32 @@ class GlowSensor(GlowEntity, SensorEntity):
             _LOGGER.info("Usable values for %s again", self.unique_id)
         return value
 
+    def _read_value(self, message: GlowMessage) -> Any:
+        """Return the sensor's value from a message."""
+        description = self.entity_description
+        if description.days_value_fn is None:
+            return description.value_fn(message.payload)
+        if (
+            description.meter_interval is None
+            or self._time_zone is None
+            or message.timestamp is None
+        ):
+            return None
+        return description.days_value_fn(
+            message.payload,
+            days_into_interval(
+                message.timestamp,
+                self._time_zone,
+                description.meter_interval,
+            ),
+        )
+
     @callback
     def async_process_message(self, message: GlowMessage) -> None:
         """Update the sensor from a Glow message."""
         description = self.entity_description
         try:
-            value = description.value_fn(message.payload)
+            value = self._read_value(message)
         except (AttributeError, IndexError, KeyError, TypeError, ValueError) as err:
             # A field this sensor depends on is missing or null in the payload
             # (e.g. no tariff data from the supplier). Report the state as

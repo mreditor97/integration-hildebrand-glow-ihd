@@ -135,6 +135,12 @@
       "electricity_cost_today": {
         "name": "Electricity: Cost (Today)"
       },
+      "electricity_cost_week": {
+        "name": "Electricity: Cost (This week)"
+      },
+      "electricity_cost_month": {
+        "name": "Electricity: Cost (This month)"
+      },
       "electricity_last_reading": {
         "name": "Electricity: Last Reading"
       },
@@ -170,6 +176,12 @@
       },
       "gas_cost_today": {
         "name": "Gas: Cost (Today)"
+      },
+      "gas_cost_week": {
+        "name": "Gas: Cost (This week)"
+      },
+      "gas_cost_month": {
+        "name": "Gas: Cost (This month)"
       },
       "gas_last_reading": {
         "name": "Gas: Last Reading"

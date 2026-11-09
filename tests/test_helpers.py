@@ -12,6 +12,8 @@ from custom_components.hildebrand_glow_ihd.helpers import (
     GlowTopic,
     InvalidValueError,
     calculate_cost_today,
+    calculate_period_cost,
+    days_into_interval,
     determine_last_reset,
     entry_title,
     gas_volume,
@@ -338,3 +340,48 @@ def test_validate_state_value_invalid(
     """Values that can't be a sensor's state raise InvalidValueError."""
     with pytest.raises(InvalidValueError):
         validate_state_value(value, numeric=numeric, timestamp=timestamp)
+
+
+def test_calculate_period_cost() -> None:
+    """A period's cost has a standing charge for each day so far."""
+    meter = {
+        "energy": {
+            "import": {
+                "week": 4.761,
+                "price": {"unitrate": 0.2061, "standingcharge": 0.4781},
+            },
+        },
+    }
+    # Monday, the first day of the week
+    assert calculate_period_cost(meter, "week", 1) == 1.46
+    assert calculate_period_cost(meter, "week", 3) == 2.42
+    meter["energy"]["import"]["price"] = None
+    assert calculate_period_cost(meter, "week", 3) is None
+
+
+@pytest.mark.parametrize(
+    ("message_time", "time_zone", "interval", "expected"),
+    [
+        # Monday 9 November 2026, the first day of the week
+        (datetime(2026, 11, 9, 20, 32, tzinfo=UTC), UTC, MeterInterval.WEEK, 1),
+        (datetime(2026, 11, 9, 20, 32, tzinfo=UTC), UTC, MeterInterval.MONTH, 9),
+        (datetime(2026, 11, 8, 23, 59, tzinfo=UTC), UTC, MeterInterval.WEEK, 7),
+        # 00:38 BST on Sunday 12 June 2022 is still Saturday in UTC
+        (
+            datetime(2022, 6, 11, 23, 38, tzinfo=UTC),
+            ZoneInfo("Europe/London"),
+            MeterInterval.WEEK,
+            7,
+        ),
+        (datetime(2022, 6, 11, 23, 38, tzinfo=UTC), UTC, MeterInterval.WEEK, 6),
+        (datetime(2022, 6, 11, 23, 38, tzinfo=UTC), UTC, MeterInterval.DAY, 1),
+    ],
+)
+def test_days_into_interval(
+    message_time: datetime,
+    time_zone: ZoneInfo,
+    interval: MeterInterval,
+    expected: int,
+) -> None:
+    """The day of the interval counts from 1, in the meter's time zone."""
+    assert days_into_interval(message_time, time_zone, interval) == expected
