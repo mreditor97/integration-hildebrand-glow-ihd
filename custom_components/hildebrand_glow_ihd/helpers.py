@@ -212,7 +212,21 @@ def validate_state_value(value: Any, *, numeric: bool, timestamp: bool) -> Any:
 
 
 def calculate_cost_today(meter_data: dict[str, Any]) -> float | None:
-    """Return today's cost (standing charge + day kWh * unit rate).
+    """Return today's cost (standing charge + day kWh * unit rate)."""
+    return calculate_period_cost(meter_data, "day", 1)
+
+
+def calculate_period_cost(
+    meter_data: dict[str, Any],
+    field: str,
+    days: int,
+) -> float | None:
+    """Return a period's cost from the IHD's kWh for it.
+
+    The cost is the standing charge for each day of the period so far, plus
+    the period's kWh at the current unit rate. The IHD only reports the
+    current rates, so a period in which they changed is priced at the
+    current ones.
 
     The IHD publishes ``null`` for the unit rate and/or standing charge when
     the supplier has not sent tariff data to the meter. Rather than raising a
@@ -226,9 +240,25 @@ def calculate_cost_today(meter_data: dict[str, Any]) -> float | None:
     if unit_rate is None and standing_charge is None:
         return None
     return round(
-        (standing_charge or 0) + (energy_import.get("day") or 0) * (unit_rate or 0),
+        (standing_charge or 0) * days
+        + (energy_import.get(field) or 0) * (unit_rate or 0),
         2,
     )
+
+
+def days_into_interval(
+    message_time: datetime,
+    meter_time_zone: tzinfo,
+    meter_interval: MeterInterval,
+) -> int:
+    """Return which day of the meter's reset interval a message is from.
+
+    The first day of the interval is 1, so this is the number of standing
+    charges in the interval so far.
+    """
+    start = determine_last_reset(message_time, meter_time_zone, meter_interval)
+    start_date = start.astimezone(meter_time_zone).date()
+    return (message_time.astimezone(meter_time_zone).date() - start_date).days + 1
 
 
 def gas_volume(payload: dict[str, Any], field: str, units_field: str) -> float | None:
@@ -269,121 +299,3 @@ def determine_last_reset(
         case MeterInterval.YEAR:
             last_reset = meter_midnight.replace(day=1, month=1)
     return last_reset.astimezone(UTC)
-
-
-def _parse_datetime(value: Any) -> datetime | None:
-    """Return a stored ISO datetime, or None if it isn't one."""
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else None
-
-
-@dataclass(slots=True)
-class PeriodCost:
-    """A week's or month's cost, added up from the meter's daily costs.
-
-    The IHD only reports the cost of the current day, and at midnight that
-    falls to the day's standing charge rather than to 0. Adding up the
-    increases of the daily cost, as a Utility Meter helper does, misses that
-    standing charge every day. Instead keep the cost of the days that have
-    finished in the period, and add the latest cost of the current day.
-    """
-
-    # The start of the week or month being added up, None before any reading
-    period_start: datetime | None = None
-    # The start of the day the latest reading was for
-    day_start: datetime | None = None
-    # The cost of the days of the period that have finished
-    finished_days_cost: float = 0.0
-    # The latest cost reported for the current day
-    day_cost: float = 0.0
-
-    @property
-    def total(self) -> float | None:
-        """Return the period's cost so far, or None before any reading."""
-        if self.period_start is None:
-            return None
-        return round(self.finished_days_cost + self.day_cost, 2)
-
-    def update(
-        self,
-        day_cost: float,
-        day_start: datetime,
-        period_start: datetime,
-    ) -> None:
-        """Add a reading of the current day's cost."""
-        if (
-            self.period_start is not None
-            and self.day_start is not None
-            and (
-                period_start < self.period_start
-                or (period_start == self.period_start and day_start < self.day_start)
-            )
-        ):
-            # A late message from a period or day already moved on from
-            return
-        if period_start != self.period_start:
-            self.period_start = period_start
-            self.finished_days_cost = 0.0
-        elif day_start != self.day_start:
-            # The previous day has finished, its last reported cost is its cost
-            self.finished_days_cost += self.day_cost
-        self.day_start = day_start
-        self.day_cost = day_cost
-
-    def restore(self, previous: PeriodCost) -> None:
-        """Merge in the cost saved before Home Assistant restarted.
-
-        A reading can arrive before the saved cost is loaded, so the saved
-        cost is only kept if it is for the same period as the readings since.
-        """
-        if previous.period_start is None or previous.day_start is None:
-            return
-        if self.period_start is None or self.day_start is None:
-            self.period_start = previous.period_start
-            self.day_start = previous.day_start
-            self.finished_days_cost = previous.finished_days_cost
-            self.day_cost = previous.day_cost
-            return
-        if previous.period_start != self.period_start:
-            return
-        if previous.day_start == self.day_start:
-            self.finished_days_cost = previous.finished_days_cost
-        elif previous.day_start < self.day_start:
-            self.finished_days_cost = previous.finished_days_cost + previous.day_cost
-
-    def as_dict(self) -> dict[str, Any]:
-        """Return the cost in a form that can be saved as JSON."""
-        return {
-            "period_start": (
-                self.period_start.isoformat() if self.period_start else None
-            ),
-            "day_start": self.day_start.isoformat() if self.day_start else None,
-            "finished_days_cost": self.finished_days_cost,
-            "day_cost": self.day_cost,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> PeriodCost:
-        """Return a cost saved by as_dict, or an empty one if it can't be read."""
-        period_start = _parse_datetime(data.get("period_start"))
-        day_start = _parse_datetime(data.get("day_start"))
-        finished_days_cost = data.get("finished_days_cost")
-        day_cost = data.get("day_cost")
-        if (
-            period_start is None
-            or day_start is None
-            or not isinstance(finished_days_cost, (int, float))
-            or not isinstance(day_cost, (int, float))
-        ):
-            return cls()
-        return cls(
-            period_start=period_start,
-            day_start=day_start,
-            finished_days_cost=float(finished_days_cost),
-            day_cost=float(day_cost),
-        )

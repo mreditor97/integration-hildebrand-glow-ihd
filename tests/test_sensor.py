@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import State
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
@@ -16,7 +15,6 @@ from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_mqtt_message,
     async_fire_time_changed,
-    mock_restore_cache_with_extra_data,
 )
 
 from custom_components.hildebrand_glow_ihd.const import AVAILABILITY_TIMEOUT, DOMAIN
@@ -32,7 +30,7 @@ from .const import (
 
 if TYPE_CHECKING:
     from freezegun.api import FrozenDateTimeFactory
-    from homeassistant.core import HomeAssistant
+    from homeassistant.core import HomeAssistant, State
     from pytest_homeassistant_custom_component.typing import MqttMockHAClient
 
 STATE_TOPIC = f"glow/{DEVICE_ID}/STATE"
@@ -73,8 +71,9 @@ EXPECTED_SENSORS: list[tuple[str, str, str]] = [
     ),
     ("electricity_power", "electricity_power", "951.0"),
     ("electricity_cost_today", "electricity_cost_today", "0.9"),
-    ("electricity_cost_this_week", "electricity_cost_this_week", "0.9"),
-    ("electricity_cost_this_month", "electricity_cost_this_month", "0.9"),
+    # Sunday 12 June in the UK: 7 standing charges this week, 12 this month
+    ("electricity_cost_this_week", "electricity_cost_this_week", "8.76"),
+    ("electricity_cost_this_month", "electricity_cost_this_month", "17.56"),
     ("gas_import", "gas_import", "17940.852"),
     ("gas_import_vol", "gas_import_vol", "1500.2"),
     # The IHD reports these volumes in kWh, so they're unknown
@@ -100,8 +99,9 @@ EXPECTED_SENSORS: list[tuple[str, str, str]] = [
         "0.1785",
     ),
     ("gas_cost_today", "gas_cost_today", "0.18"),
-    ("gas_cost_this_week", "gas_cost_this_week", "0.18"),
-    ("gas_cost_this_month", "gas_cost_this_month", "0.18"),
+    # Saturday 11 June in UTC: 6 standing charges this week, 11 this month
+    ("gas_cost_this_week", "gas_cost_this_week", "1.07"),
+    ("gas_cost_this_month", "gas_cost_this_month", "1.96"),
 ]
 
 
@@ -926,108 +926,49 @@ async def test_unavailable_until_first_reading(
     assert gas.state == STATE_UNAVAILABLE
 
 
-def _state(hass: HomeAssistant, entity_id: str) -> str:
+def _state(hass: HomeAssistant, entity_id: str) -> State:
     """Return the state of an entity that must exist."""
     state = hass.states.get(entity_id)
     assert state is not None
-    return state.state
+    return state
 
 
-def _electricity_payload(timestamp: str, day: float) -> dict[str, Any]:
-    """Return an electricity payload with a time and the day's kWh."""
+async def test_period_cost(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """The week's and month's cost come from the IHD's kWh for them."""
+    await _setup(hass, config_entry)
     payload: dict[str, Any] = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
     meter = payload["electricitymeter"]
-    meter["timestamp"] = timestamp
-    meter["energy"]["import"]["day"] = day
-    meter["energy"]["import"]["price"] = {"unitrate": 0.2, "standingcharge": 0.5}
-    return payload
-
-
-async def test_period_cost_keeps_standing_charge(
-    hass: HomeAssistant,
-    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
-    config_entry: MockConfigEntry,
-) -> None:
-    """The week's and month's cost keep each day's standing charge."""
-    await _setup(hass, config_entry)
-    # Sunday 8 November 2026, 23:30 in the UK (GMT)
-    _publish(hass, ELECTRICITY_TOPIC, _electricity_payload("2026-11-08T23:30:00Z", 5))
-    await hass.async_block_till_done()
-    week = _entity_id(hass, "electricity_cost_this_week")
-    month = _entity_id(hass, "electricity_cost_this_month")
-    assert _state(hass, week) == "1.5"
-    assert _state(hass, month) == "1.5"
-
-    # Monday, the IHD's day and week start again, at the standing charge
-    _publish(hass, ELECTRICITY_TOPIC, _electricity_payload("2026-11-09T00:05:00Z", 0))
-    await hass.async_block_till_done()
-    assert _state(hass, week) == "0.5"
-    assert _state(hass, month) == "2.0"
-    _publish(hass, ELECTRICITY_TOPIC, _electricity_payload("2026-11-09T20:00:00Z", 5))
-    await hass.async_block_till_done()
-    week_state = hass.states.get(week)
-    assert week_state is not None
-    assert week_state.state == "1.5"
-    assert week_state.attributes["last_reset"] == "2026-11-09T00:00:00+00:00"
-    month_state = hass.states.get(month)
-    assert month_state is not None
-    assert month_state.state == "3.0"
-    assert month_state.attributes["last_reset"] == "2026-11-01T00:00:00+00:00"
-    assert month_state.attributes["state_class"] == "total"
-
-
-async def test_period_cost_unknown_price_keeps_total(
-    hass: HomeAssistant,
-    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
-    config_entry: MockConfigEntry,
-) -> None:
-    """A message without prices leaves the week's cost so far as it is."""
-    await _setup(hass, config_entry)
-    _publish(hass, ELECTRICITY_TOPIC, _electricity_payload("2026-11-09T20:00:00Z", 5))
-    await hass.async_block_till_done()
-    payload = _electricity_payload("2026-11-09T20:10:00Z", 6)
-    payload["electricitymeter"]["energy"]["import"]["price"] = None
+    # Monday 9 November 2026, 20:32 in the UK (GMT)
+    meter["timestamp"] = "2026-11-09T20:32:19Z"
+    meter["energy"]["import"].update(
+        {
+            "day": 4.761,
+            "week": 4.761,
+            "month": 45.959,
+            "price": {"unitrate": 0.2061, "standingcharge": 0.4781},
+        },
+    )
     _publish(hass, ELECTRICITY_TOPIC, payload)
     await hass.async_block_till_done()
-    assert _state(hass, _entity_id(hass, "electricity_cost_today")) == (STATE_UNKNOWN)
-    assert _state(hass, _entity_id(hass, "electricity_cost_this_week")) == ("1.5")
 
+    today = _state(hass, _entity_id(hass, "electricity_cost_today"))
+    week = _state(hass, _entity_id(hass, "electricity_cost_this_week"))
+    month = _state(hass, _entity_id(hass, "electricity_cost_this_month"))
+    # The first day of the week costs the same as today
+    assert today.state == week.state == "1.46"
+    assert week.attributes["last_reset"] == "2026-11-09T00:00:00+00:00"
+    # 9 standing charges and 45.959 kWh
+    assert month.state == "13.78"
+    assert month.attributes["last_reset"] == "2026-11-01T00:00:00+00:00"
+    assert month.attributes["state_class"] == "total"
 
-async def test_period_cost_restored(
-    hass: HomeAssistant,
-    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
-    config_entry: MockConfigEntry,
-) -> None:
-    """The month's cost carries on from before Home Assistant restarted."""
-    entity_id = "sensor.home_electricity_cost_this_month"
-    config_entry.add_to_hass(hass)
-    er.async_get(hass).async_get_or_create(
-        "sensor",
-        DOMAIN,
-        f"{DEVICE_ID.lower()}_electricity_cost_this_month",
-        suggested_object_id="home_electricity_cost_this_month",
-        config_entry=config_entry,
-    )
-    mock_restore_cache_with_extra_data(
-        hass,
-        [
-            (
-                State(entity_id, "10.0"),
-                {
-                    "period_start": "2026-11-01T00:00:00+00:00",
-                    "day_start": "2026-11-08T00:00:00+00:00",
-                    "finished_days_cost": 8.5,
-                    "day_cost": 1.5,
-                },
-            ),
-        ],
-    )
-    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    # Without a timestamp the days can't be counted
+    del meter["timestamp"]
+    _publish(hass, ELECTRICITY_TOPIC, payload)
     await hass.async_block_till_done()
-    _publish(hass, ELECTRICITY_TOPIC, _electricity_payload("2026-11-09T20:00:00Z", 5))
-    await hass.async_block_till_done()
-    # 8.50 + Sunday's 1.50 + today's 1.50
-    assert _state(hass, entity_id) == "11.5"
-    week = hass.states.get(_entity_id(hass, "electricity_cost_this_week"))
-    assert week is not None
-    assert week.state == "1.5"
+    week = _state(hass, _entity_id(hass, "electricity_cost_this_week"))
+    assert week.state == STATE_UNKNOWN

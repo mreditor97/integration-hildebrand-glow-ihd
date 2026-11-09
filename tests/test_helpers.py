@@ -11,8 +11,9 @@ from custom_components.hildebrand_glow_ihd.const import MeterInterval, TopicKind
 from custom_components.hildebrand_glow_ihd.helpers import (
     GlowTopic,
     InvalidValueError,
-    PeriodCost,
     calculate_cost_today,
+    calculate_period_cost,
+    days_into_interval,
     determine_last_reset,
     entry_title,
     gas_volume,
@@ -341,107 +342,46 @@ def test_validate_state_value_invalid(
         validate_state_value(value, numeric=numeric, timestamp=timestamp)
 
 
-# Days and weeks for the PeriodCost tests, in UTC
-MONDAY = datetime(2026, 11, 2, tzinfo=UTC)
-TUESDAY = datetime(2026, 11, 3, tzinfo=UTC)
-WEDNESDAY = datetime(2026, 11, 4, tzinfo=UTC)
-NEXT_MONDAY = datetime(2026, 11, 9, tzinfo=UTC)
-
-
-def test_period_cost_keeps_each_days_standing_charge() -> None:
-    """A day's cost falling to its standing charge at midnight isn't lost."""
-    assert PeriodCost().total is None
-    cost = PeriodCost()
-    cost.update(0.48, MONDAY, MONDAY)
-    cost.update(1.36, MONDAY, MONDAY)
-    assert cost.total == 1.36
-    # Tuesday starts at the standing charge
-    cost.update(0.48, TUESDAY, MONDAY)
-    assert cost.total == 1.84
-    cost.update(1.45, TUESDAY, MONDAY)
-    assert cost.total == 2.81
-
-
-def test_period_cost_follows_the_days_cost_down() -> None:
-    """A lower unit rate can lower the day's cost, the total follows it."""
-    cost = PeriodCost()
-    cost.update(1.0, MONDAY, MONDAY)
-    cost.update(0.9, MONDAY, MONDAY)
-    assert cost.total == 0.9
-
-
-def test_period_cost_starts_again_each_period() -> None:
-    """A new week starts from the new week's first day's cost."""
-    cost = PeriodCost()
-    cost.update(1.36, MONDAY, MONDAY)
-    cost.update(1.40, TUESDAY, MONDAY)
-    cost.update(0.48, NEXT_MONDAY, NEXT_MONDAY)
-    assert cost.total == 0.48
-    assert cost.period_start == NEXT_MONDAY
-
-
-def test_period_cost_ignores_late_messages() -> None:
-    """A message for a day or period already moved on from is ignored."""
-    cost = PeriodCost()
-    cost.update(0.5, TUESDAY, MONDAY)
-    cost.update(9.0, MONDAY, MONDAY)
-    assert cost.total == 0.5
-    cost.update(0.48, NEXT_MONDAY, NEXT_MONDAY)
-    cost.update(9.0, WEDNESDAY, MONDAY)
-    assert cost.total == 0.48
-
-
-def test_period_cost_round_trip() -> None:
-    """A saved cost reads back the same, and a bad one reads back empty."""
-    cost = PeriodCost()
-    cost.update(1.36, MONDAY, MONDAY)
-    cost.update(0.5, TUESDAY, MONDAY)
-    assert PeriodCost.from_dict(json.loads(json.dumps(cost.as_dict()))) == cost
-    assert PeriodCost.from_dict(PeriodCost().as_dict()) == PeriodCost()
-    assert PeriodCost.from_dict({"period_start": "nonsense"}) == PeriodCost()
-    assert (
-        PeriodCost.from_dict(
-            {**cost.as_dict(), "day_start": "2026-11-03T00:00:00"},
-        )
-        == PeriodCost()
-    )
-    assert PeriodCost.from_dict({**cost.as_dict(), "day_cost": "x"}) == PeriodCost()
-
-
-def _saved(*readings: tuple[float, datetime, datetime]) -> PeriodCost:
-    """Return a PeriodCost after some readings."""
-    cost = PeriodCost()
-    for reading in readings:
-        cost.update(*reading)
-    return cost
+def test_calculate_period_cost() -> None:
+    """A period's cost has a standing charge for each day so far."""
+    meter = {
+        "energy": {
+            "import": {
+                "week": 4.761,
+                "price": {"unitrate": 0.2061, "standingcharge": 0.4781},
+            },
+        },
+    }
+    # Monday, the first day of the week
+    assert calculate_period_cost(meter, "week", 1) == 1.46
+    assert calculate_period_cost(meter, "week", 3) == 2.42
+    meter["energy"]["import"]["price"] = None
+    assert calculate_period_cost(meter, "week", 3) is None
 
 
 @pytest.mark.parametrize(
-    ("readings", "expected"),
+    ("message_time", "time_zone", "interval", "expected"),
     [
-        # No reading since the restart, the saved cost is used as it is
-        ((), 1.84),
-        # A reading for the same day replaces the day's cost
-        (((0.6, TUESDAY, MONDAY),), 1.96),
-        # The saved day has finished, its last cost is kept
-        (((0.48, WEDNESDAY, MONDAY),), 2.32),
-        # A new period since, the saved cost is for the old one
-        (((0.48, NEXT_MONDAY, NEXT_MONDAY),), 0.48),
+        # Monday 9 November 2026, the first day of the week
+        (datetime(2026, 11, 9, 20, 32, tzinfo=UTC), UTC, MeterInterval.WEEK, 1),
+        (datetime(2026, 11, 9, 20, 32, tzinfo=UTC), UTC, MeterInterval.MONTH, 9),
+        (datetime(2026, 11, 8, 23, 59, tzinfo=UTC), UTC, MeterInterval.WEEK, 7),
+        # 00:38 BST on Sunday 12 June 2022 is still Saturday in UTC
+        (
+            datetime(2022, 6, 11, 23, 38, tzinfo=UTC),
+            ZoneInfo("Europe/London"),
+            MeterInterval.WEEK,
+            7,
+        ),
+        (datetime(2022, 6, 11, 23, 38, tzinfo=UTC), UTC, MeterInterval.WEEK, 6),
+        (datetime(2022, 6, 11, 23, 38, tzinfo=UTC), UTC, MeterInterval.DAY, 1),
     ],
 )
-def test_period_cost_restore(
-    readings: tuple[tuple[float, datetime, datetime], ...],
-    expected: float,
+def test_days_into_interval(
+    message_time: datetime,
+    time_zone: ZoneInfo,
+    interval: MeterInterval,
+    expected: int,
 ) -> None:
-    """The cost saved before a restart is merged with readings since."""
-    saved = _saved((1.36, MONDAY, MONDAY), (0.48, TUESDAY, MONDAY))
-    cost = _saved(*readings)
-    cost.restore(saved)
-    assert cost.total == expected
-
-
-def test_period_cost_restore_nothing_saved() -> None:
-    """An empty saved cost changes nothing."""
-    cost = _saved((0.5, MONDAY, MONDAY))
-    cost.restore(PeriodCost())
-    assert cost.total == 0.5
+    """The day of the interval counts from 1, in the meter's time zone."""
+    assert days_into_interval(message_time, time_zone, interval) == expected

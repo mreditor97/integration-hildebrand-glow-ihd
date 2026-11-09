@@ -80,7 +80,7 @@ Home Assistant shows each sensor after its device's name, e.g. **Home Electricit
 | Electricity: Import Unit Rate                        | GBP/kWh | Current unit rate, no long-term statistics  |
 | Electricity: Import Standing Charge                  | GBP     | Daily standing charge, no long-term stats   |
 | Electricity: Cost (Today)                            | GBP     | Standing charge + today's usage × unit rate |
-| Electricity: Cost (This week / This month)           | GBP     | Sum of each day's cost, see below           |
+| Electricity: Cost (This week / This month)           | GBP     | Standing charges + usage × unit rate        |
 
 ### Gas
 
@@ -93,11 +93,11 @@ Home Assistant shows each sensor after its device's name, e.g. **Home Electricit
 | Gas: Import Unit Rate                            | GBP/kWh | Current unit rate, no long-term statistics  |
 | Gas: Import Standing Charge                      | GBP     | Daily standing charge, no long-term stats   |
 | Gas: Cost (Today)                                | GBP     | Standing charge + today's usage × unit rate |
-| Gas: Cost (This week / This month)               | GBP     | Sum of each day's cost, see below           |
+| Gas: Cost (This week / This month)               | GBP     | Standing charges + usage × unit rate        |
 
 **Electricity: Power** is shown in W on new installs. A power sensor you already have keeps the unit it had, kW unless you changed it. To show it in W, open the sensor's settings and set **Unit of measurement** to W. Automations and dashboards that compare it with a number in kW then need that number in W.
 
-The IHD only reports the cost of the current day, so **Cost (This week)** and **Cost (This month)** add up each day's last **Cost (Today)**, standing charge included. Weeks start on Monday, like the meter's weekly totals. They start counting when the sensor is added, so the first week and month are short, and days or parts of days when Home Assistant isn't running can be missed. Use them instead of a Utility Meter helper on **Cost (Today)**: at midnight that cost falls to the day's standing charge rather than to 0, so a Utility Meter misses the standing charge every day.
+**Cost (This week)** and **Cost (This month)** are worked out from the meter's kWh for the week or month: a standing charge for each day so far, plus the kWh at the unit rate. Weeks start on Monday, like the meter's weekly totals. The IHD only reports the current prices, so a week or month in which your prices changed is priced at the new ones. Use these instead of a Utility Meter helper on **Cost (Today)**: at midnight that cost falls to the day's standing charge rather than to 0, so a Utility Meter misses the standing charge every day.
 
 There is no live gas power sensor: the IHD stopped publishing gas power in software update 1.8.13 (June 2022).
 
