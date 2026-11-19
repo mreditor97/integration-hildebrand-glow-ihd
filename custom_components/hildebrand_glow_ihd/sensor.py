@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.components import mqtt
 from homeassistant.components.sensor import (
@@ -14,18 +14,24 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import (
+    ATTR_UNIT_OF_MEASUREMENT,
     SIGNAL_STRENGTH_DECIBELS,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
     EntityCategory,
+    Platform,
     UnitOfEnergy,
     UnitOfPower,
     UnitOfVolume,
 )
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.restore_state import RestoredExtraData, RestoreEntity
 from homeassistant.util import dt as dt_util
+from homeassistant.util import slugify
 
 from .const import (
     AVAILABILITY_CHECK_INTERVAL,
@@ -33,6 +39,7 @@ from .const import (
     DEFAULT_DEVICE_ID,
     DEFAULT_NAME,
     DOMAIN,
+    ELECTRICITY_TARIFF_TYPE_VARIABLE,
     POWER_ERROR_VALUE,
     MeterInterval,
     TopicKind,
@@ -41,17 +48,21 @@ from .entity import GlowEntity
 from .helpers import (
     InvalidValueError,
     PeriodVolume,
+    VariableDayCost,
     calculate_cost_today,
     calculate_period_cost,
     days_into_interval,
     determine_last_reset,
     device_versions,
+    electricity_day_reading,
     gas_volume,
     no_messages_issue_id,
     parse_message,
     parse_topic,
     payload_timestamp,
+    period_costs_removed_issue_id,
     subscription_topic,
+    unit_rate_from_state,
     validate_state_value,
 )
 from .models import GlowDeviceState
@@ -457,6 +468,15 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Glow sensors, adding each device's when it first publishes."""
+    if entry.runtime_data.electricity_tariff_type == ELECTRICITY_TARIFF_TYPE_VARIABLE:
+        _async_remove_period_electricity_costs(hass, entry)
+    else:
+        # They are made again for a fixed tariff
+        ir.async_delete_issue(
+            hass,
+            DOMAIN,
+            period_costs_removed_issue_id(entry.entry_id),
+        )
     handler = GlowMessageHandler(hass, entry, async_add_entities)
     # Subscribe to one device's topics when one is set, otherwise to all
     entry.async_on_unload(
@@ -481,6 +501,60 @@ async def async_setup_entry(
             handler.async_raise_issue_if_nothing_heard,
         ),
     )
+
+
+# The sensors that aren't made for a variable tariff. The IHD only reports
+# the current unit rate, so the week's and month's kWh can't be priced.
+FIXED_TARIFF_ONLY_KEYS: Final = frozenset(
+    {"electricity_cost_week", "electricity_cost_month"},
+)
+
+
+@callback
+def _async_remove_period_electricity_costs(
+    hass: HomeAssistant,
+    entry: GlowConfigEntry,
+) -> None:
+    """Remove the week's and month's electricity cost sensors.
+
+    They are left behind when an entry's tariff is changed to variable. A
+    repair issue lists the ones removed, as automations, dashboards and the
+    Energy dashboard may have used them.
+    """
+    suffixes = tuple(
+        f"_{slugify(description.unique_id_name)}"
+        for description in ELECTRICITY_SENSORS
+        if description.key in FIXED_TARIFF_ONLY_KEYS
+    )
+    entity_registry = er.async_get(hass)
+    removed: list[str] = []
+    for entity_entry in er.async_entries_for_config_entry(
+        entity_registry,
+        entry.entry_id,
+    ):
+        if entity_entry.domain == Platform.SENSOR and entity_entry.unique_id.endswith(
+            suffixes,
+        ):
+            _LOGGER.info(
+                "Removing %s, which isn't used with a variable tariff",
+                entity_entry.entity_id,
+            )
+            entity_registry.async_remove(entity_entry.entity_id)
+            removed.append(entity_entry.entity_id)
+    if removed:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            period_costs_removed_issue_id(entry.entry_id),
+            is_fixable=True,
+            is_persistent=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="period_costs_removed",
+            translation_placeholders={
+                "title": entry.title,
+                "entities": "\n".join(f"- {entity_id}" for entity_id in removed),
+            },
+        )
 
 
 class GlowMessageHandler:
@@ -532,15 +606,23 @@ class GlowMessageHandler:
         self._settings.devices[device_id] = device_state
         sensors = {
             kind: [
-                (
-                    GlowPeriodVolumeSensor
-                    if description.volume_interval is not None
-                    else GlowSensor
-                )(device_id, description, self._time_zones[kind], device_state)
+                self._sensor_class(description)(
+                    device_id,
+                    description,
+                    self._time_zones[kind],
+                    device_state,
+                )
                 for description in descriptions
+                if self._should_create_sensor(description)
             ]
             for kind, descriptions in DESCRIPTIONS_BY_KIND.items()
         }
+        for kind_sensors in sensors.values():
+            for sensor in kind_sensors:
+                if isinstance(sensor, GlowVariableElectricityCostSensor):
+                    sensor.unit_rate_entity_id = (
+                        self._settings.electricity_unit_rate_entity
+                    )
         self._async_add_entities(
             sensor for kind_sensors in sensors.values() for sensor in kind_sensors
         )
@@ -552,6 +634,32 @@ class GlowMessageHandler:
             no_messages_issue_id(self._entry.entry_id),
         )
         return sensors
+
+    def _should_create_sensor(
+        self,
+        description: GlowSensorEntityDescription,
+    ) -> bool:
+        """Return whether a sensor is made for the entry's tariff."""
+        return not (
+            self._settings.electricity_tariff_type == ELECTRICITY_TARIFF_TYPE_VARIABLE
+            and description.key in FIXED_TARIFF_ONLY_KEYS
+        )
+
+    def _sensor_class(
+        self,
+        description: GlowSensorEntityDescription,
+    ) -> type[GlowSensor]:
+        """Choose the sensor implementation for a description and tariff mode."""
+        if description.volume_interval is not None:
+            return GlowPeriodVolumeSensor
+        if description.key == "electricity_cost_today":
+            if (
+                self._settings.electricity_tariff_type
+                == ELECTRICITY_TARIFF_TYPE_VARIABLE
+            ):
+                return GlowVariableElectricityCostSensor
+            return GlowFixedElectricityCostSensor
+        return GlowSensor
 
     @callback
     def _async_write_device_sensors(self, device_id: str) -> None:
@@ -915,3 +1023,147 @@ class GlowPeriodVolumeSensor(GlowSensor, RestoreEntity):
         if (value := self._read_value(message)) is None:
             value = calculated
         self._async_set_value(value)
+
+
+class GlowFixedElectricityCostSensor(GlowSensor, RestoreEntity):
+    """Today's electricity cost for a fixed tariff.
+
+    Nothing is restored. Its stored state, which has no extra data, replaces
+    the running cost a variable tariff stored, so changing back to variable
+    later doesn't count on from a cost that missed the usage in between.
+    """
+
+
+class GlowVariableElectricityCostSensor(GlowSensor, RestoreEntity):
+    """Today's electricity cost, added up across changes in the unit rate.
+
+    Used instead of the usual cost sensor for a variable tariff. The cost so
+    far is stored across restarts.
+    """
+
+    def __init__(
+        self,
+        device_id: str,
+        description: GlowSensorEntityDescription,
+        time_zone: tzinfo | None,
+        device_state: GlowDeviceState,
+    ) -> None:
+        """Initialise the sensor."""
+        super().__init__(device_id, description, time_zone, device_state)
+        self._day_cost = VariableDayCost()
+        # The sensor the unit rate is read from instead of the IHD, if set
+        self.unit_rate_entity_id: str | None = None
+        # Whether an unusable unit rate sensor has been logged since it was
+        # last usable
+        self._bad_rate_entity_logged = False
+        # Messages arrive before the stored state is read when the sensor is
+        # added, the latest one is kept until then
+        self._restored = False
+        self._pending_message: GlowMessage | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Read the stored cost, then any message that came before it."""
+        await super().async_added_to_hass()
+        if (data := await self.async_get_last_extra_data()) is not None:
+            self._day_cost = VariableDayCost.from_dict(data.as_dict())
+        self._restored = True
+        if (message := self._pending_message) is not None:
+            self._pending_message = None
+            self.async_process_message(message)
+
+    @property
+    def extra_restore_state_data(self) -> RestoredExtraData:
+        """Return the day's cost so far, to store across restarts."""
+        return RestoredExtraData(self._day_cost.as_dict())
+
+    def _entity_unit_rate(self) -> float | None:
+        """Return the unit rate sensor's rate, or None to use the IHD's.
+
+        The IHD's rate is used while the sensor is unavailable. A state or
+        unit that can't be used is logged as a warning once, until the
+        sensor can be used again.
+        """
+        if self.unit_rate_entity_id is None:
+            return None
+        state = self.hass.states.get(self.unit_rate_entity_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            # Usual while it starts up, so only logged at debug level
+            _LOGGER.debug(
+                "%s has no unit rate, the IHD's is used",
+                self.unit_rate_entity_id,
+            )
+            return None
+        try:
+            rate = unit_rate_from_state(
+                state.state,
+                state.attributes.get(ATTR_UNIT_OF_MEASUREMENT),
+            )
+        except ValueError as err:
+            if not self._bad_rate_entity_logged:
+                self._bad_rate_entity_logged = True
+                _LOGGER.warning(
+                    "Can't read the unit rate from %s: %s. The IHD's unit rate"
+                    " is used until it can be read",
+                    self.unit_rate_entity_id,
+                    err,
+                )
+            return None
+        if self._bad_rate_entity_logged:
+            self._bad_rate_entity_logged = False
+            _LOGGER.info(
+                "Reading the unit rate from %s again",
+                self.unit_rate_entity_id,
+            )
+        return rate
+
+    @callback
+    def async_process_message(self, message: GlowMessage) -> None:
+        """Update the sensor from a Glow message."""
+        if not self._restored:
+            self._pending_message = message
+            return
+        if message.timestamp is None or self._time_zone is None:
+            _LOGGER.debug(
+                "Can't work out the cost for %s without the reading's time",
+                self.unique_id,
+            )
+            return
+        try:
+            day_kwh, unit_rate, standing_charge = electricity_day_reading(
+                message.payload,
+            )
+        except (AttributeError, KeyError, TypeError, ValueError) as err:
+            _LOGGER.debug(
+                "Unable to read value for %s from payload (%r), state unknown",
+                self.unique_id,
+                err,
+            )
+            self._async_set_value(None)
+            return
+        if (entity_rate := self._entity_unit_rate()) is not None:
+            unit_rate = entity_rate
+        if not self._day_cost.has_price(unit_rate, standing_charge):
+            # No tariff data from the supplier
+            self._async_set_value(None)
+            return
+        period_start = determine_last_reset(
+            message.timestamp,
+            self._time_zone,
+            MeterInterval.DAY,
+        )
+        cost = self._day_cost.update(
+            message.timestamp,
+            period_start,
+            day_kwh,
+            unit_rate,
+            standing_charge,
+            trust_zero_rate=entity_rate is not None,
+        )
+        if cost is None:
+            _LOGGER.debug(
+                "Ignored a late reading for %s",
+                self.unique_id,
+            )
+            return
+        self._attr_last_reset = self._day_cost.last_reset
+        self._async_set_value(cost)

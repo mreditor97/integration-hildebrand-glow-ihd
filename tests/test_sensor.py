@@ -20,7 +20,14 @@ from pytest_homeassistant_custom_component.common import (
     mock_restore_cache_with_extra_data,
 )
 
-from custom_components.hildebrand_glow_ihd.const import AVAILABILITY_TIMEOUT, DOMAIN
+from custom_components.hildebrand_glow_ihd.const import (
+    AVAILABILITY_TIMEOUT,
+    CONF_ELECTRICITY_TARIFF_TYPE,
+    CONF_ELECTRICITY_UNIT_RATE_ENTITY,
+    DOMAIN,
+    ELECTRICITY_TARIFF_TYPE_FIXED,
+    ELECTRICITY_TARIFF_TYPE_VARIABLE,
+)
 
 from .const import (
     DEVICE_ID,
@@ -978,6 +985,400 @@ async def test_period_cost(
     assert week.state == STATE_UNKNOWN
 
 
+async def test_variable_electricity_cost_tracks_rate_changes_and_meter_day(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """Variable mode uses the previous rate for each energy increment."""
+    variable_entry = MockConfigEntry(
+        domain=DOMAIN,
+        title=config_entry.title,
+        unique_id=config_entry.unique_id,
+        data={
+            **config_entry.data,
+            CONF_ELECTRICITY_TARIFF_TYPE: ELECTRICITY_TARIFF_TYPE_VARIABLE,
+        },
+        minor_version=config_entry.minor_version,
+    )
+    await _setup(hass, variable_entry)
+
+    payload: dict[str, Any] = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    meter = payload["electricitymeter"]
+    energy_import = meter["energy"]["import"]
+    meter["timestamp"] = "2026-11-14T10:00:00Z"
+    energy_import.update(
+        {"day": 10.0, "price": {"unitrate": 0.1, "standingcharge": 0.5}},
+    )
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+    cost = _state(hass, _entity_id(hass, "electricity_cost_today"))
+    assert cost.state == "1.5"
+    entity_registry = er.async_get(hass)
+    assert (
+        entity_registry.async_get_entity_id(
+            "sensor",
+            DOMAIN,
+            f"{DEVICE_ID.lower()}_electricity_import_this_week",
+        )
+        is not None
+    )
+    for interval in ("week", "month"):
+        assert (
+            entity_registry.async_get_entity_id(
+                "sensor",
+                DOMAIN,
+                f"{DEVICE_ID.lower()}_electricity_cost_this_{interval}",
+            )
+            is None
+        )
+
+    meter["timestamp"] = "2026-11-14T11:00:00Z"
+    energy_import.update(
+        {"day": 12.0, "price": {"unitrate": 0.3, "standingcharge": 0.5}},
+    )
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+    cost = _state(hass, _entity_id(hass, "electricity_cost_today"))
+    assert cost.state == "1.7"
+
+    meter["timestamp"] = "2026-11-14T12:00:00Z"
+    energy_import["day"] = 13.5
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+    cost = _state(hass, _entity_id(hass, "electricity_cost_today"))
+    assert cost.state == "2.15"
+
+    meter["timestamp"] = "2026-11-15T01:00:00Z"
+    energy_import.update(
+        {"day": 1.0, "price": {"unitrate": 0.4, "standingcharge": 0.5}},
+    )
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+    cost = _state(hass, _entity_id(hass, "electricity_cost_today"))
+    assert cost.state == "0.9"
+    assert cost.attributes["last_reset"] == "2026-11-15T00:00:00+00:00"
+
+
+async def test_variable_electricity_cost_restores_tracker(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """The previous reading and rate survive Home Assistant restarts."""
+    variable_entry = MockConfigEntry(
+        domain=DOMAIN,
+        title=config_entry.title,
+        unique_id=config_entry.unique_id,
+        data={
+            **config_entry.data,
+            CONF_ELECTRICITY_TARIFF_TYPE: ELECTRICITY_TARIFF_TYPE_VARIABLE,
+        },
+        minor_version=config_entry.minor_version,
+    )
+    stored = {
+        "energy_cost": 1.2,
+        "previous_kwh": 10.0,
+        "previous_rate": 0.1,
+        "standing_charge": 0.5,
+        "last_reset": "2026-11-14T00:00:00+00:00",
+        "last_message_time": "2026-11-14T10:00:00+00:00",
+    }
+    mock_restore_cache_with_extra_data(
+        hass,
+        [(State("sensor.home_electricity_cost_today", "1.7"), stored)],
+    )
+    await _setup(hass, variable_entry)
+
+    payload: dict[str, Any] = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    meter = payload["electricitymeter"]
+    meter["timestamp"] = "2026-11-14T11:00:00Z"
+    meter["energy"]["import"].update(
+        {"day": 12.0, "price": {"unitrate": 0.3, "standingcharge": 0.5}},
+    )
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+
+    cost = _state(hass, _entity_id(hass, "electricity_cost_today"))
+    assert cost.state == "1.9"
+
+
+def _variable_entry(config_entry: MockConfigEntry) -> MockConfigEntry:
+    """Return a copy of the test entry with a variable tariff."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title=config_entry.title,
+        unique_id=config_entry.unique_id,
+        data={
+            **config_entry.data,
+            CONF_ELECTRICITY_TARIFF_TYPE: ELECTRICITY_TARIFF_TYPE_VARIABLE,
+        },
+        minor_version=config_entry.minor_version,
+    )
+
+
+async def test_variable_electricity_cost_meter_resets_after_midnight(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """Yesterday's kWh in a reading after midnight doesn't stay in the cost."""
+    await _setup(hass, _variable_entry(config_entry))
+    payload: dict[str, Any] = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    meter = payload["electricitymeter"]
+    energy_import = meter["energy"]["import"]
+    energy_import["price"] = {"unitrate": 0.1, "standingcharge": 0.5}
+    for timestamp, day_kwh in (
+        ("2026-11-14T23:59:00Z", 10.0),
+        # The meter hasn't reset its day's kWh yet
+        ("2026-11-15T00:00:10Z", 10.0),
+        ("2026-11-15T00:01:10Z", 0.05),
+        ("2026-11-15T06:00:00Z", 2.0),
+    ):
+        meter["timestamp"] = timestamp
+        energy_import["day"] = day_kwh
+        _publish(hass, ELECTRICITY_TOPIC, payload)
+        await hass.async_block_till_done()
+    cost = _state(hass, _entity_id(hass, "electricity_cost_today"))
+    assert cost.state == "0.7"
+    assert cost.attributes["last_reset"] == "2026-11-15T00:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    "price",
+    [None, {"unitrate": None, "standingcharge": None}],
+)
+async def test_variable_electricity_cost_without_tariff_data(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+    price: dict[str, Any] | None,
+) -> None:
+    """The cost is unknown until the supplier sends tariff data."""
+    await _setup(hass, _variable_entry(config_entry))
+    payload: dict[str, Any] = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    payload["electricitymeter"]["energy"]["import"]["price"] = price
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+    assert _state(hass, _entity_id(hass, "electricity_cost_today")).state == (
+        STATE_UNKNOWN
+    )
+
+
+async def test_variable_electricity_cost_unreadable_payload(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """A payload without the day's kWh makes the cost unknown."""
+    await _setup(hass, _variable_entry(config_entry))
+    payload: dict[str, Any] = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    del payload["electricitymeter"]["energy"]["import"]["day"]
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+    assert _state(hass, _entity_id(hass, "electricity_cost_today")).state == (
+        STATE_UNKNOWN
+    )
+
+
+async def test_variable_electricity_cost_needs_reading_time(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """Without the reading's time, the day can't be known, so no cost."""
+    await _setup(hass, _variable_entry(config_entry))
+    payload: dict[str, Any] = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    del payload["electricitymeter"]["timestamp"]
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+    assert _state(hass, _entity_id(hass, "electricity_cost_today")).state == (
+        STATE_UNAVAILABLE
+    )
+
+
+async def test_variable_electricity_cost_ignores_older_reading(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """A late reading with a lower kWh doesn't change the cost."""
+    await _setup(hass, _variable_entry(config_entry))
+    payload: dict[str, Any] = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    meter = payload["electricitymeter"]
+    energy_import = meter["energy"]["import"]
+    energy_import["price"] = {"unitrate": 0.1, "standingcharge": 0.5}
+    for timestamp, day_kwh in (
+        ("2026-11-14T11:00:00Z", 10.0),
+        ("2026-11-14T10:00:00Z", 8.0),
+    ):
+        meter["timestamp"] = timestamp
+        energy_import["day"] = day_kwh
+        _publish(hass, ELECTRICITY_TOPIC, payload)
+        await hass.async_block_till_done()
+    assert _state(hass, _entity_id(hass, "electricity_cost_today")).state == "1.5"
+
+
+async def test_variable_electricity_cost_starts_afresh_after_fixed(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """A spell on a fixed tariff clears the variable tariff's stored cost."""
+    variable_entry = _variable_entry(config_entry)
+    await _setup(hass, variable_entry)
+    payload: dict[str, Any] = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    meter = payload["electricitymeter"]
+    energy_import = meter["energy"]["import"]
+    meter["timestamp"] = "2026-11-14T10:00:00Z"
+    energy_import.update(
+        {"day": 10.0, "price": {"unitrate": 0.1, "standingcharge": 0.5}},
+    )
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+    entity_id = _entity_id(hass, "electricity_cost_today")
+
+    async def _change_tariff(tariff_type: str) -> None:
+        result = await hass.config_entries.options.async_init(
+            variable_entry.entry_id,
+        )
+        await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                "time_zone_electricity": "Europe/London",
+                "time_zone_gas": "UTC",
+                CONF_ELECTRICITY_TARIFF_TYPE: tariff_type,
+            },
+        )
+        await hass.async_block_till_done()
+
+    await _change_tariff(ELECTRICITY_TARIFF_TYPE_FIXED)
+    # 10 kWh used while on the fixed tariff
+    meter["timestamp"] = "2026-11-14T12:00:00Z"
+    energy_import.update(
+        {"day": 20.0, "price": {"unitrate": 0.3, "standingcharge": 0.5}},
+    )
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+    assert _state(hass, entity_id).state == "6.5"
+
+    await _change_tariff(ELECTRICITY_TARIFF_TYPE_VARIABLE)
+    meter["timestamp"] = "2026-11-14T13:00:00Z"
+    energy_import["day"] = 21.0
+    _publish(hass, ELECTRICITY_TOPIC, payload)
+    await hass.async_block_till_done()
+    # The day so far is priced at the current rate. Counting on from the
+    # stored 10 kWh would have priced the 10 kWh used since at 0.1.
+    assert _state(hass, entity_id).state == "6.8"
+
+
+async def test_variable_electricity_cost_unit_rate_sensor(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The unit rate is read from a sensor when one is set."""
+    variable_entry = _variable_entry(config_entry)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title=variable_entry.title,
+        unique_id=variable_entry.unique_id,
+        data=variable_entry.data,
+        options={CONF_ELECTRICITY_UNIT_RATE_ENTITY: "sensor.current_rate"},
+        minor_version=variable_entry.minor_version,
+    )
+    hass.states.async_set(
+        "sensor.current_rate",
+        "0.25",
+        {"unit_of_measurement": "GBP/kWh"},
+    )
+    await _setup(hass, entry)
+    payload: dict[str, Any] = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    meter = payload["electricitymeter"]
+    energy_import = meter["energy"]["import"]
+    energy_import["price"] = {"unitrate": 0.1, "standingcharge": 0.5}
+
+    async def _reading(timestamp: str, day_kwh: float) -> str:
+        meter["timestamp"] = timestamp
+        energy_import["day"] = day_kwh
+        _publish(hass, ELECTRICITY_TOPIC, payload)
+        await hass.async_block_till_done()
+        return _state(hass, _entity_id(hass, "electricity_cost_today")).state
+
+    # The sensor's rate, not the IHD's 0.1
+    assert await _reading("2026-11-14T10:00:00Z", 10.0) == "3.0"
+    # The rate changes to 30p, the 2 kWh since were used at 0.25
+    hass.states.async_set("sensor.current_rate", "30", {"unit_of_measurement": "p/kWh"})
+    assert await _reading("2026-11-14T10:30:00Z", 12.0) == "3.5"
+    # The sensor can't be read, so the IHD's rate is used from now
+    hass.states.async_set("sensor.current_rate", "unavailable")
+    assert await _reading("2026-11-14T11:00:00Z", 13.0) == "3.8"
+    assert await _reading("2026-11-14T11:30:00Z", 14.0) == "3.9"
+    # It can be read again
+    hass.states.async_set(
+        "sensor.current_rate",
+        "0.2",
+        {"unit_of_measurement": "GBP/kWh"},
+    )
+    assert await _reading("2026-11-14T12:00:00Z", 15.0) == "4.0"
+    assert await _reading("2026-11-14T12:30:00Z", 16.0) == "4.2"
+    hass.states.async_remove("sensor.current_rate")
+    assert await _reading("2026-11-14T13:00:00Z", 17.0) == "4.4"
+    # A unit that isn't a unit rate is logged once
+    hass.states.async_set("sensor.current_rate", "0.2", {"unit_of_measurement": "W"})
+    assert await _reading("2026-11-14T13:30:00Z", 18.0) == "4.5"
+    assert await _reading("2026-11-14T14:00:00Z", 19.0) == "4.6"
+    assert caplog.text.count("Can't read the unit rate from sensor.current_rate") == 1
+
+
+async def test_variable_tariff_removes_period_electricity_costs(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """Changing to a variable tariff removes the week and month costs."""
+    await _setup(hass, config_entry)
+    _publish(hass, ELECTRICITY_TOPIC, ELECTRICITY_PAYLOAD)
+    await hass.async_block_till_done()
+    entity_registry = er.async_get(hass)
+    period_costs = [
+        f"{DEVICE_ID.lower()}_electricity_cost_this_{interval}"
+        for interval in ("week", "month")
+    ]
+    for unique_id in period_costs:
+        assert entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+    await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "time_zone_electricity": "Europe/London",
+            "time_zone_gas": "UTC",
+            CONF_ELECTRICITY_TARIFF_TYPE: ELECTRICITY_TARIFF_TYPE_VARIABLE,
+        },
+    )
+    await hass.async_block_till_done()
+    for unique_id in period_costs:
+        assert entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id) is None
+    # A repair issue lists the removed sensors
+    issue = ir.async_get(hass).async_get_issue(
+        DOMAIN,
+        f"period_costs_removed_{config_entry.entry_id}",
+    )
+    assert issue is not None
+    assert issue.is_fixable
+    assert issue.translation_placeholders is not None
+    assert "electricity_cost_this_week" in issue.translation_placeholders["entities"]
+    # The other sensors are kept
+    assert _entity_id(hass, "electricity_cost_today")
+    assert entity_registry.async_get_entity_id(
+        "sensor",
+        DOMAIN,
+        f"{DEVICE_ID.lower()}_gas_cost_this_week",
+    )
+
+
 def _gas_payload(timestamp: str, volume: float, units: str = "kWh") -> dict[str, Any]:
     """Return the test gas payload with another time and lifetime volume."""
     payload: dict[str, Any] = json.loads(json.dumps(GAS_PAYLOAD))
@@ -1108,3 +1509,22 @@ async def test_gas_period_volumes_restored(
         "last_volume": 1502.6,
         "last_time": "2022-06-12T20:00:00+00:00",
     }
+
+
+async def test_fixed_tariff_clears_period_costs_issue(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """Changing back to a fixed tariff removes the repair issue."""
+    issue_id = f"period_costs_removed_{config_entry.entry_id}"
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="period_costs_removed",
+    )
+    await _setup(hass, config_entry)
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None

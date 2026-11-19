@@ -6,6 +6,7 @@ import zoneinfo
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
+from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 from homeassistant.config_entries import (
     ConfigFlow,
     OptionsFlowWithReload,
@@ -13,19 +14,25 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_DEVICE_ID, CONF_NAME
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
 )
 
 from .const import (
+    CONF_ELECTRICITY_TARIFF_TYPE,
+    CONF_ELECTRICITY_UNIT_RATE_ENTITY,
     CONF_TIME_ZONE_ELECTRICITY,
     CONF_TIME_ZONE_GAS,
     CONF_TOPIC_PREFIX,
     DEFAULT_DEVICE_ID,
+    DEFAULT_ELECTRICITY_TARIFF_TYPE,
     DEFAULT_NAME,
     DEFAULT_TOPIC_PREFIX,
     DOMAIN,
+    ELECTRICITY_TARIFF_TYPES,
 )
 from .helpers import (
     entry_title,
@@ -73,6 +80,41 @@ def _device_schema(defaults: Mapping[str, Any]) -> dict[vol.Marker, Any]:
             CONF_TOPIC_PREFIX,
             default=defaults.get(CONF_TOPIC_PREFIX, DEFAULT_TOPIC_PREFIX),
         ): str,
+    }
+
+
+def _electricity_tariff_schema(
+    defaults: Mapping[str, Any],
+) -> dict[vol.Marker, Any]:
+    """Return the form field for a fixed or variable electricity tariff."""
+    return {
+        vol.Required(
+            CONF_ELECTRICITY_TARIFF_TYPE,
+            default=defaults.get(
+                CONF_ELECTRICITY_TARIFF_TYPE,
+                DEFAULT_ELECTRICITY_TARIFF_TYPE,
+            ),
+        ): SelectSelector(
+            SelectSelectorConfig(
+                options=list(ELECTRICITY_TARIFF_TYPES),
+                mode=SelectSelectorMode.DROPDOWN,
+                translation_key=CONF_ELECTRICITY_TARIFF_TYPE,
+            ),
+        ),
+    }
+
+
+def _unit_rate_entity_schema(
+    defaults: Mapping[str, Any],
+) -> dict[vol.Marker, Any]:
+    """Return the form field for a sensor to read the unit rate from."""
+    return {
+        vol.Optional(
+            CONF_ELECTRICITY_UNIT_RATE_ENTITY,
+            description={
+                "suggested_value": defaults.get(CONF_ELECTRICITY_UNIT_RATE_ENTITY),
+            },
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
     }
 
 
@@ -174,6 +216,7 @@ class HildebrandGlowIHDMQTTConfigFlow(ConfigFlow, domain=DOMAIN):
                 {  # type: ignore[arg-type]
                     **_name_schema(defaults),
                     **_device_schema(defaults),
+                    **_electricity_tariff_schema(defaults),
                     **await _async_time_zone_schema(self.hass, defaults),
                 },
             ),
@@ -204,7 +247,7 @@ class HildebrandGlowIHDMQTTConfigFlow(ConfigFlow, domain=DOMAIN):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Confirm adding a discovered Glow device and choose its time zones."""
+        """Confirm adding a discovered Glow device and choose its settings."""
         device_id = self._discovered_device_id
         if user_input is not None:
             return self.async_create_entry(
@@ -222,6 +265,7 @@ class HildebrandGlowIHDMQTTConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {  # type: ignore[arg-type]
                     **_name_schema({}),
+                    **_electricity_tariff_schema({}),
                     **await _async_time_zone_schema(self.hass, {}),
                 },
             ),
@@ -273,7 +317,7 @@ class HildebrandGlowIHDMQTTConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class HildebrandGlowIHDMQTTOptionsFlowHandler(OptionsFlowWithReload):
-    """Change the meters' time zones, then reload the entry to apply them.
+    """Change the tariff and time zones, then reload the entry to apply them.
 
     The device ID and topic prefix are changed with Reconfigure instead, so
     the entry's unique ID and title stay in step with them.
@@ -290,9 +334,13 @@ class HildebrandGlowIHDMQTTOptionsFlowHandler(OptionsFlowWithReload):
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
-                await _async_time_zone_schema(  # type: ignore[arg-type]
-                    self.hass,
-                    entry_settings(self.config_entry),
-                ),
+                {  # type: ignore[arg-type]
+                    **_electricity_tariff_schema(entry_settings(self.config_entry)),
+                    **_unit_rate_entity_schema(entry_settings(self.config_entry)),
+                    **await _async_time_zone_schema(
+                        self.hass,
+                        entry_settings(self.config_entry),
+                    ),
+                },
             ),
         )

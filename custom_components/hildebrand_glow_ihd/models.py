@@ -9,9 +9,13 @@ from homeassistant.const import CONF_DEVICE_ID, CONF_NAME
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_ELECTRICITY_TARIFF_TYPE,
+    CONF_ELECTRICITY_UNIT_RATE_ENTITY,
     CONF_TIME_ZONE_ELECTRICITY,
     CONF_TIME_ZONE_GAS,
     CONF_TOPIC_PREFIX,
+    DEFAULT_ELECTRICITY_TARIFF_TYPE,
+    ELECTRICITY_TARIFF_TYPES,
 )
 from .helpers import normalize_device_id, normalize_topic_prefix
 
@@ -47,6 +51,9 @@ class GlowRuntimeData:
     topic_prefix: str
     time_zone_electricity: tzinfo
     time_zone_gas: tzinfo
+    electricity_tariff_type: str = DEFAULT_ELECTRICITY_TARIFF_TYPE
+    # The sensor a variable tariff's unit rate is read from, if one is set
+    electricity_unit_rate_entity: str | None = None
     # The name given at setup, None for entries made before there was one
     name: str | None = None
     # The devices heard from so far, by device ID
@@ -68,6 +75,12 @@ async def _async_time_zone(name: str | None) -> tzinfo:
 async def async_build_runtime_data(entry: ConfigEntry) -> GlowRuntimeData:
     """Return the runtime data for a config entry."""
     settings = entry_settings(entry)
+    electricity_tariff_type = settings.get(
+        CONF_ELECTRICITY_TARIFF_TYPE,
+        DEFAULT_ELECTRICITY_TARIFF_TYPE,
+    )
+    if electricity_tariff_type not in ELECTRICITY_TARIFF_TYPES:
+        electricity_tariff_type = DEFAULT_ELECTRICITY_TARIFF_TYPE
     return GlowRuntimeData(
         device_id=normalize_device_id(settings.get(CONF_DEVICE_ID)),
         topic_prefix=normalize_topic_prefix(settings.get(CONF_TOPIC_PREFIX)),
@@ -75,5 +88,9 @@ async def async_build_runtime_data(entry: ConfigEntry) -> GlowRuntimeData:
             settings.get(CONF_TIME_ZONE_ELECTRICITY),
         ),
         time_zone_gas=await _async_time_zone(settings.get(CONF_TIME_ZONE_GAS)),
+        electricity_tariff_type=electricity_tariff_type,
+        electricity_unit_rate_entity=(
+            settings.get(CONF_ELECTRICITY_UNIT_RATE_ENTITY) or None
+        ),
         name=(settings.get(CONF_NAME) or "").strip() or None,
     )

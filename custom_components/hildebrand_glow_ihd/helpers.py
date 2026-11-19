@@ -37,6 +37,11 @@ def no_messages_issue_id(entry_id: str) -> str:
     return f"no_messages_{entry_id}"
 
 
+def period_costs_removed_issue_id(entry_id: str) -> str:
+    """Return the ID of the repair issue raised when cost sensors are removed."""
+    return f"period_costs_removed_{entry_id}"
+
+
 @dataclass(frozen=True, slots=True)
 class GlowTopic:
     """The device and kind of message an MQTT topic is for."""
@@ -394,6 +399,240 @@ class PeriodVolume:
         ):
             return cls()
         return restored
+
+
+def electricity_day_reading(
+    payload: dict[str, Any],
+) -> tuple[float, float | None, float | None]:
+    """Return the day's import kWh, unit rate and standing charge.
+
+    Raises KeyError, TypeError or ValueError when the day's kWh is missing or
+    any of them isn't a number. The rates are None when the IHD sends null.
+    """
+    energy_import = payload["electricitymeter"]["energy"]["import"]
+    price = energy_import.get("price") or {}
+    if not isinstance(price, dict):
+        msg = f"{price!r} is not a price"
+        raise TypeError(msg)
+    day_kwh = _optional_float(energy_import.get("day"))
+    if day_kwh is None:
+        msg = "The day's kWh is missing"
+        raise ValueError(msg)
+    return (
+        day_kwh,
+        _optional_float(price.get("unitrate")),
+        _optional_float(price.get("standingcharge")),
+    )
+
+
+# The units a unit rate sensor can be in, and what to multiply its state by
+# to get GBP/kWh
+UNIT_RATE_UNITS: dict[str, float] = {
+    "gbp/kwh": 1.0,
+    "£/kwh": 1.0,
+    "p/kwh": 0.01,
+    "pence/kwh": 0.01,
+}
+
+
+def unit_rate_from_state(state: str, unit: str | None) -> float:
+    """Return a unit rate sensor's state in GBP/kWh.
+
+    Raises ValueError when the state isn't a number or its unit isn't one
+    in UNIT_RATE_UNITS.
+    """
+    factor = UNIT_RATE_UNITS.get((unit or "").replace(" ", "").lower())
+    if factor is None:
+        msg = f"{unit!r} isn't a unit rate unit, such as GBP/kWh or p/kWh"
+        raise ValueError(msg)
+    rate = float(state)
+    if not isfinite(rate):
+        msg = f"{state!r} is not a finite number"
+        raise ValueError(msg)
+    return rate * factor
+
+
+# How long either side of midnight the meter's day kWh can still be the day
+# before's
+METER_RESET_GRACE = timedelta(minutes=30)
+
+
+@dataclass(slots=True)
+class VariableDayCost:
+    """Works out today's electricity cost when the unit rate can change.
+
+    The IHD reports the day's kWh and the current unit rate. Each increase in
+    the day's kWh is priced at the rate from the reading before it, as that
+    rate applied while the energy was used. The cost so far and the latest
+    reading are stored across restarts.
+
+    A new day starts when the day's kWh goes down, as it does when the meter
+    resets its daily total. If it hasn't gone down by half an hour after the
+    meter's midnight, e.g. because Home Assistant was off across it, the day
+    starts then. The kWh already used when a day starts that way, or after
+    setup, is priced at the current rate.
+    """
+
+    # When the current day started, in UTC
+    last_reset: datetime | None = None
+    # The cost of the day's kWh so far, without the standing charge
+    energy_cost: float = 0.0
+    # The latest reading's day kWh and the unit rate it reported
+    previous_kwh: float | None = None
+    previous_rate: float | None = None
+    # The latest standing charge reported
+    standing_charge: float | None = None
+    # When the latest reading was taken
+    last_message_time: datetime | None = None
+    # Whether the latest reading's unit rate was 0
+    zero_rate_seen: bool = False
+
+    def has_price(self, unit_rate: float | None, standing_charge: float | None) -> bool:
+        """Return whether a reading with these rates can be priced."""
+        return any(
+            value is not None
+            for value in (
+                unit_rate,
+                standing_charge,
+                self.previous_rate,
+                self.standing_charge,
+            )
+        )
+
+    def _meter_not_reset_yet(
+        self,
+        reading_time: datetime,
+        period_start: datetime,
+        day_kwh: float,
+    ) -> bool:
+        """Return whether the meter's day kWh is still the day before's.
+
+        The meter resets its day's kWh a little after midnight, so for a
+        short time after it the readings are still the day before's. They
+        are added to that day until the kWh goes down.
+        """
+        return (
+            self.previous_kwh is not None
+            and self.last_message_time is not None
+            and day_kwh >= self.previous_kwh
+            and self.last_message_time >= period_start - METER_RESET_GRACE
+            and reading_time < period_start + METER_RESET_GRACE
+        )
+
+    def _unit_rate(
+        self,
+        unit_rate: float | None,
+        *,
+        trust_zero_rate: bool,
+    ) -> float | None:
+        """Return a reading's unit rate, or None if it shouldn't be used.
+
+        The IHD sends 0 when it can't read the meter, but a tariff's rate
+        can really be 0. A 0 is used once a second reading in a row has it,
+        or straight away when it is trusted, e.g. from a unit rate sensor.
+        """
+        if unit_rate != 0 or trust_zero_rate:
+            self.zero_rate_seen = False
+            return unit_rate
+        if self.zero_rate_seen:
+            return unit_rate
+        self.zero_rate_seen = True
+        return None
+
+    def update(  # noqa: PLR0913
+        self,
+        reading_time: datetime,
+        period_start: datetime,
+        day_kwh: float,
+        unit_rate: float | None,
+        standing_charge: float | None,
+        *,
+        trust_zero_rate: bool = False,
+    ) -> float | None:
+        """Add a reading and return the day's cost so far.
+
+        The day the cost is for is then last_reset. Returns None for a
+        reading that is ignored.
+
+        A reading older than the latest one is ignored if its kWh is lower,
+        so a message that arrives late doesn't start a new day. If its kWh
+        isn't lower, the IHD's clock was put back, and it is used.
+
+        A 0 for the day's kWh after the day has started is what the IHD
+        sends when it can't read the meter, so it isn't used.
+        """
+        last_time = self.last_message_time
+        if last_time is not None and reading_time < last_time:
+            if self.previous_kwh is None or day_kwh < self.previous_kwh:
+                return None
+            # The clock was put back, keep counting from the latest reading
+            reading_time = last_time
+        if self.last_reset is not None and (
+            period_start < self.last_reset
+            or self._meter_not_reset_yet(reading_time, period_start, day_kwh)
+        ):
+            period_start = self.last_reset
+        new_day = self.last_reset != period_start
+        if day_kwh == 0 and not new_day and self.previous_kwh:
+            # The IHD sends 0 when it can't read the meter. Only a new day's
+            # 0 is real, a drop to 0 later in the day would lose the cost so
+            # far, so the reading is skipped.
+            return self._cost()
+        unit_rate = self._unit_rate(unit_rate, trust_zero_rate=trust_zero_rate)
+        if standing_charge is not None:
+            self.standing_charge = standing_charge
+        if (
+            new_day
+            or self.previous_kwh is None
+            or self.previous_rate is None
+            or day_kwh < self.previous_kwh
+        ):
+            rate = unit_rate if unit_rate is not None else self.previous_rate
+            self.energy_cost = day_kwh * (rate or 0.0)
+            self.previous_rate = rate
+        else:
+            self.energy_cost += (day_kwh - self.previous_kwh) * self.previous_rate
+            if unit_rate is not None:
+                self.previous_rate = unit_rate
+        # Until a rate is known the kWh can't be priced, so it is priced from
+        # the first reading with one
+        self.previous_kwh = day_kwh if self.previous_rate is not None else None
+        self.last_reset = period_start
+        self.last_message_time = reading_time
+        return self._cost()
+
+    def _cost(self) -> float:
+        """Return the day's cost so far, with the standing charge."""
+        return round(self.energy_cost + (self.standing_charge or 0.0), 2)
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the state to store across restarts."""
+        return {
+            "last_reset": _isoformat(self.last_reset),
+            "energy_cost": self.energy_cost,
+            "previous_kwh": self.previous_kwh,
+            "previous_rate": self.previous_rate,
+            "standing_charge": self.standing_charge,
+            "last_message_time": _isoformat(self.last_message_time),
+            "zero_rate_seen": self.zero_rate_seen,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> VariableDayCost:
+        """Return the state stored before a restart, or a new one if invalid."""
+        try:
+            energy_cost = _optional_float(data.get("energy_cost"))
+            return cls(
+                last_reset=_parse_utc(data.get("last_reset")),
+                energy_cost=energy_cost if energy_cost is not None else 0.0,
+                previous_kwh=_optional_float(data.get("previous_kwh")),
+                previous_rate=_optional_float(data.get("previous_rate")),
+                standing_charge=_optional_float(data.get("standing_charge")),
+                last_message_time=_parse_utc(data.get("last_message_time")),
+                zero_rate_seen=data.get("zero_rate_seen") is True,
+            )
+        except (TypeError, ValueError):
+            return cls()
 
 
 def _isoformat(value: datetime | None) -> str | None:

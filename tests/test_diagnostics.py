@@ -55,6 +55,8 @@ async def test_diagnostics(
         "topic_prefix": "glow",
         "time_zone_electricity": "Europe/London",
         "time_zone_gas": "UTC",
+        "electricity_tariff_type": "fixed",
+        "electricity_unit_rate_entity": None,
     }
     assert len(diagnostics["devices"]) == 1
     device = diagnostics["devices"][0]

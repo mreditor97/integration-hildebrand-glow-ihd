@@ -15,6 +15,19 @@ PLATFORMS: Final = [Platform.SENSOR]
 CONF_TIME_ZONE_ELECTRICITY: Final = "time_zone_electricity"
 CONF_TIME_ZONE_GAS: Final = "time_zone_gas"
 CONF_TOPIC_PREFIX: Final = "topic_prefix"
+CONF_ELECTRICITY_TARIFF_TYPE: Final = "electricity_tariff_type"
+# A sensor to read a variable tariff's unit rate from, instead of the IHD
+CONF_ELECTRICITY_UNIT_RATE_ENTITY: Final = "electricity_unit_rate_entity"
+
+# A fixed tariff's unit rate stays the same all day, a variable tariff's can
+# change during the day
+ELECTRICITY_TARIFF_TYPE_FIXED: Final = "fixed"
+ELECTRICITY_TARIFF_TYPE_VARIABLE: Final = "variable"
+ELECTRICITY_TARIFF_TYPES: Final = (
+    ELECTRICITY_TARIFF_TYPE_FIXED,
+    ELECTRICITY_TARIFF_TYPE_VARIABLE,
+)
+DEFAULT_ELECTRICITY_TARIFF_TYPE: Final = ELECTRICITY_TARIFF_TYPE_FIXED
 
 DEFAULT_TITLE: Final = "Hildebrand Glow IHD"
 # The name devices get by default. New entity IDs start with it.

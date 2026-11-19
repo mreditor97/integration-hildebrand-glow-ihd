@@ -22,6 +22,7 @@ from .helpers import (
     no_messages_issue_id,
     normalize_device_id,
     normalize_topic_prefix,
+    period_costs_removed_issue_id,
 )
 from .models import async_build_runtime_data, entry_settings
 
@@ -165,6 +166,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: GlowConfigEntry) -> boo
     """
     ir.async_delete_issue(hass, DOMAIN, no_messages_issue_id(entry.entry_id))
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: GlowConfigEntry) -> None:
+    """Remove the repair issues an entry leaves until they are dismissed."""
+    ir.async_delete_issue(
+        hass,
+        DOMAIN,
+        period_costs_removed_issue_id(entry.entry_id),
+    )
 
 
 async def async_remove_config_entry_device(

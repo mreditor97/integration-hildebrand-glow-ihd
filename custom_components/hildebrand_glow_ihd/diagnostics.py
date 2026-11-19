@@ -39,6 +39,8 @@ async def async_get_config_entry_diagnostics(
             "topic_prefix": settings.topic_prefix,
             "time_zone_electricity": str(settings.time_zone_electricity),
             "time_zone_gas": str(settings.time_zone_gas),
+            "electricity_tariff_type": settings.electricity_tariff_type,
+            "electricity_unit_rate_entity": settings.electricity_unit_rate_entity,
         },
         # Listed in the order they were found, without their IDs
         "devices": [

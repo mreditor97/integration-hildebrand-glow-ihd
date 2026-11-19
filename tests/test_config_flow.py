@@ -11,7 +11,13 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.service_info.mqtt import MqttServiceInfo
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hildebrand_glow_ihd.const import DOMAIN
+from custom_components.hildebrand_glow_ihd.const import (
+    CONF_ELECTRICITY_TARIFF_TYPE,
+    CONF_ELECTRICITY_UNIT_RATE_ENTITY,
+    DOMAIN,
+    ELECTRICITY_TARIFF_TYPE_FIXED,
+    ELECTRICITY_TARIFF_TYPE_VARIABLE,
+)
 
 from .const import DEVICE_ID, ENTRY_DATA, OTHER_DEVICE_ID, STATE_PAYLOAD
 
@@ -78,7 +84,11 @@ async def test_user_flow(
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == f"Hildebrand Glow IHD ({DEVICE_ID})"
-    assert result["data"] == {**ENTRY_DATA, "device_id": DEVICE_ID}
+    assert result["data"] == {
+        **ENTRY_DATA,
+        "device_id": DEVICE_ID,
+        CONF_ELECTRICITY_TARIFF_TYPE: ELECTRICITY_TARIFF_TYPE_FIXED,
+    }
     # Existing entries use this unique ID
     assert result["result"].unique_id == f"{DOMAIN}_{DEVICE_ID}"
 
@@ -129,6 +139,25 @@ async def test_user_flow_blank_name(
     result = await _user_flow(hass, {**ENTRY_DATA, "name": "  "})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"]["name"] == "Glow"
+
+
+async def test_user_flow_variable_tariff(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+) -> None:
+    """The selected variable tariff type is saved to the config entry."""
+    result = await _user_flow(
+        hass,
+        {
+            **ENTRY_DATA,
+            "device_id": DEVICE_ID,
+            CONF_ELECTRICITY_TARIFF_TYPE: ELECTRICITY_TARIFF_TYPE_VARIABLE,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_ELECTRICITY_TARIFF_TYPE] == (
+        ELECTRICITY_TARIFF_TYPE_VARIABLE
+    )
 
 
 async def test_user_flow_same_device_differently_typed(
@@ -192,7 +221,11 @@ async def test_mqtt_discovery(
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == f"Hildebrand Glow IHD ({DEVICE_ID})"
-    assert result["data"] == {**ENTRY_DATA, "device_id": DEVICE_ID}
+    assert result["data"] == {
+        **ENTRY_DATA,
+        "device_id": DEVICE_ID,
+        CONF_ELECTRICITY_TARIFF_TYPE: ELECTRICITY_TARIFF_TYPE_FIXED,
+    }
     assert result["result"].unique_id == f"{DOMAIN}_{DEVICE_ID}"
 
 
@@ -301,3 +334,59 @@ async def test_options_flow(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert config_entry.state is ConfigEntryState.LOADED
     assert str(config_entry.runtime_data.time_zone_gas) == "Europe/London"
+
+
+async def test_options_flow_tariff_type(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """The tariff type can be changed after setup."""
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert config_entry.runtime_data.electricity_tariff_type == (
+        ELECTRICITY_TARIFF_TYPE_FIXED
+    )
+
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {**TIME_ZONES, CONF_ELECTRICITY_TARIFF_TYPE: ELECTRICITY_TARIFF_TYPE_VARIABLE},
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert config_entry.runtime_data.electricity_tariff_type == (
+        ELECTRICITY_TARIFF_TYPE_VARIABLE
+    )
+
+
+async def test_options_flow_unit_rate_entity(
+    hass: HomeAssistant,
+    mqtt_mock: MqttMockHAClient,  # noqa: ARG001
+    config_entry: MockConfigEntry,
+) -> None:
+    """A unit rate sensor can be set, then cleared."""
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    for options, expected in (
+        (
+            {CONF_ELECTRICITY_UNIT_RATE_ENTITY: "sensor.current_rate"},
+            "sensor.current_rate",
+        ),
+        ({}, None),
+    ):
+        result = await hass.config_entries.options.async_init(config_entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                **TIME_ZONES,
+                CONF_ELECTRICITY_TARIFF_TYPE: ELECTRICITY_TARIFF_TYPE_VARIABLE,
+                **options,
+            },
+        )
+        await hass.async_block_till_done()
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert config_entry.runtime_data.electricity_unit_rate_entity == expected

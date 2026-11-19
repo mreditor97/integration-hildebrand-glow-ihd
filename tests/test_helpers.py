@@ -12,10 +12,12 @@ from custom_components.hildebrand_glow_ihd.helpers import (
     GlowTopic,
     InvalidValueError,
     PeriodVolume,
+    VariableDayCost,
     calculate_cost_today,
     calculate_period_cost,
     days_into_interval,
     determine_last_reset,
+    electricity_day_reading,
     entry_title,
     gas_volume,
     normalize_device_id,
@@ -24,6 +26,7 @@ from custom_components.hildebrand_glow_ihd.helpers import (
     parse_topic,
     payload_timestamp,
     subscription_topic,
+    unit_rate_from_state,
     validate_state_value,
 )
 from tests.const import ELECTRICITY_PAYLOAD, GAS_PAYLOAD, STATE_PAYLOAD
@@ -491,3 +494,233 @@ def test_days_into_interval(
 ) -> None:
     """The day of the interval counts from 1, in the meter's time zone."""
     assert days_into_interval(message_time, time_zone, interval) == expected
+
+
+def test_variable_day_cost_prices_usage_at_previous_rate() -> None:
+    """Each increase in kWh is priced at the rate from the reading before."""
+    cost = VariableDayCost()
+    # The kWh already used today is priced at the current rate
+    assert cost.update(_utc("2026-11-07T10:00:00"), DAY_1, 10.0, 0.1, 0.5) == 1.5
+    # The rate changes to 0.3, the 2 kWh since were used at 0.1
+    assert cost.update(_utc("2026-11-07T11:00:00"), DAY_1, 12.0, 0.3, 0.5) == 1.7
+    assert cost.update(_utc("2026-11-07T12:00:00"), DAY_1, 13.5, 0.3, 0.5) == 2.15
+    # A missing rate keeps the last one
+    assert cost.update(_utc("2026-11-07T13:00:00"), DAY_1, 14.5, None, None) == 2.45
+
+
+def test_variable_day_cost_new_day() -> None:
+    """A new day starts from the kWh reported at its first reading."""
+    cost = VariableDayCost()
+    cost.update(_utc("2026-11-07T23:00:00"), DAY_1, 10.0, 0.1, 0.5)
+    assert cost.update(_utc("2026-11-08T01:00:00"), DAY_2, 1.0, 0.4, 0.5) == 0.9
+    assert cost.last_reset == DAY_2
+
+
+def test_variable_day_cost_meter_resets_after_midnight() -> None:
+    """A reading after midnight with yesterday's kWh doesn't stick."""
+    cost = VariableDayCost()
+    cost.update(_utc("2026-11-07T23:59:00"), DAY_1, 10.0, 0.1, 0.5)
+    # The meter hasn't reset its day's kWh yet
+    cost.update(_utc("2026-11-08T00:00:10"), DAY_2, 10.0, 0.1, 0.5)
+    # Now it has
+    assert cost.update(_utc("2026-11-08T00:01:10"), DAY_2, 0.05, 0.1, 0.5) == 0.51
+    assert cost.update(_utc("2026-11-08T06:00:00"), DAY_2, 2.0, 0.1, 0.5) == 0.7
+
+
+def test_variable_day_cost_meter_resets_before_midnight() -> None:
+    """The day's kWh going down starts a new day."""
+    cost = VariableDayCost()
+    cost.update(_utc("2026-11-07T22:00:00"), DAY_1, 10.0, 0.1, 0.5)
+    assert cost.update(_utc("2026-11-07T23:10:00"), DAY_1, 0.2, 0.1, 0.5) == 0.52
+    assert cost.update(_utc("2026-11-07T23:40:00"), DAY_1, 0.5, 0.1, 0.5) == 0.55
+
+
+def test_variable_day_cost_no_rate_yet() -> None:
+    """Without a unit rate, the kWh is priced from the first reading with one."""
+    cost = VariableDayCost()
+    assert not cost.has_price(None, None)
+    assert cost.has_price(None, 0.5)
+    assert cost.update(_utc("2026-11-07T10:00:00"), DAY_1, 10.0, None, 0.5) == 0.5
+    assert cost.previous_kwh is None
+    assert cost.update(_utc("2026-11-07T11:00:00"), DAY_1, 12.0, 0.1, 0.5) == 1.7
+    assert cost.update(_utc("2026-11-07T12:00:00"), DAY_1, 13.0, 0.1, 0.5) == 1.8
+
+
+def test_variable_day_cost_ignores_older_reading() -> None:
+    """A reading older than the latest one is ignored."""
+    cost = VariableDayCost()
+    cost.update(_utc("2026-11-07T11:00:00"), DAY_1, 12.0, 0.1, 0.5)
+    assert cost.update(_utc("2026-11-07T10:00:00"), DAY_1, 10.0, 0.3, 0.5) is None
+    assert cost.update(_utc("2026-11-07T12:00:00"), DAY_1, 13.0, 0.1, 0.5) == 1.8
+
+
+def test_variable_day_cost_ignores_zero_readings() -> None:
+    """A 0 sent when the IHD can't read the meter doesn't lose the cost."""
+    cost = VariableDayCost()
+    cost.update(_utc("2026-11-07T10:00:00"), DAY_1, 10.0, 0.1, 0.5)
+    assert cost.update(_utc("2026-11-07T11:00:00"), DAY_1, 12.0, 0.3, 0.5) == 1.7
+    # The day's kWh drops to 0
+    assert cost.update(_utc("2026-11-07T12:00:00"), DAY_1, 0.0, 0.3, 0.5) == 1.7
+    assert cost.update(_utc("2026-11-07T13:00:00"), DAY_1, 13.0, 0.3, 0.5) == 2.0
+    # The unit rate drops to 0
+    assert cost.update(_utc("2026-11-07T14:00:00"), DAY_1, 14.0, 0.0, 0.5) == 2.3
+    assert cost.update(_utc("2026-11-07T15:00:00"), DAY_1, 15.0, 0.3, 0.5) == 2.6
+
+
+def test_variable_day_cost_zero_at_start_of_day() -> None:
+    """A new day's first reading can be 0 kWh."""
+    cost = VariableDayCost()
+    cost.update(_utc("2026-11-07T23:30:00"), DAY_1, 10.0, 0.1, 0.5)
+    assert cost.update(_utc("2026-11-08T00:00:30"), DAY_2, 0.0, 0.1, 0.5) == 0.5
+    assert cost.update(_utc("2026-11-08T01:00:00"), DAY_2, 1.0, 0.1, 0.5) == 0.6
+
+
+def test_variable_day_cost_holds_day_until_meter_resets() -> None:
+    """Readings just after midnight with the day before's kWh stay in it."""
+    cost = VariableDayCost()
+    cost.update(_utc("2026-11-07T23:50:00"), DAY_1, 10.0, 0.1, 0.5)
+    # Still the day before's kWh, and its cost
+    assert cost.update(_utc("2026-11-08T00:00:10"), DAY_2, 10.2, 0.1, 0.5) == 1.52
+    assert cost.last_reset == DAY_1
+    # The meter resets
+    assert cost.update(_utc("2026-11-08T00:02:00"), DAY_2, 0.01, 0.1, 0.5) == 0.5
+    assert cost.last_reset == DAY_2
+
+
+def test_variable_day_cost_new_day_without_reset() -> None:
+    """Without a reset, the day starts half an hour after midnight."""
+    cost = VariableDayCost()
+    cost.update(_utc("2026-11-07T23:50:00"), DAY_1, 10.0, 0.1, 0.5)
+    assert cost.update(_utc("2026-11-08T00:40:00"), DAY_2, 10.5, 0.1, 0.5) == 1.55
+    assert cost.last_reset == DAY_2
+
+
+def test_variable_day_cost_off_across_midnight() -> None:
+    """A first reading long after the last one starts the new day."""
+    cost = VariableDayCost()
+    cost.update(_utc("2026-11-07T20:00:00"), DAY_1, 10.0, 0.1, 0.5)
+    assert cost.update(_utc("2026-11-08T00:10:00"), DAY_2, 10.5, 0.1, 0.5) == 1.55
+    assert cost.last_reset == DAY_2
+
+
+def test_variable_day_cost_clock_put_back() -> None:
+    """Readings are still used when the IHD's clock is put back."""
+    cost = VariableDayCost()
+    cost.update(_utc("2026-11-08T00:20:00"), DAY_2, 1.0, 0.1, 0.5)
+    # The clock goes back an hour, into the day before
+    assert cost.update(_utc("2026-11-07T23:30:00"), DAY_1, 2.0, 0.1, 0.5) == 0.7
+    assert cost.last_reset == DAY_2
+    assert cost.update(_utc("2026-11-07T23:40:00"), DAY_1, 3.0, 0.1, 0.5) == 0.8
+
+
+def test_variable_day_cost_real_zero_rate() -> None:
+    """A 0 unit rate is used once two readings in a row have it."""
+    cost = VariableDayCost()
+    cost.update(_utc("2026-11-07T10:00:00"), DAY_1, 10.0, 0.2, 0.5)
+    # The first 0 could be a bad reading, so 0.2 is kept for now
+    assert cost.update(_utc("2026-11-07T10:01:00"), DAY_1, 10.0, 0.0, 0.5) == 2.5
+    assert cost.update(_utc("2026-11-07T10:02:00"), DAY_1, 10.1, 0.0, 0.5) == 2.52
+    # Now the rate is 0
+    assert cost.update(_utc("2026-11-07T11:00:00"), DAY_1, 15.0, 0.2, 0.5) == 2.52
+    assert cost.update(_utc("2026-11-07T12:00:00"), DAY_1, 16.0, 0.2, 0.5) == 2.72
+
+
+def test_variable_day_cost_round_trip() -> None:
+    """The stored state is read back the same."""
+    cost = VariableDayCost()
+    cost.update(_utc("2026-11-07T11:00:00"), DAY_1, 12.0, 0.1, 0.5)
+    stored = json.loads(json.dumps(cost.as_dict()))
+    assert VariableDayCost.from_dict(stored) == cost
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"energy_cost": "nan"},
+        {"energy_cost": True},
+        {"previous_kwh": "lots"},
+        {"last_reset": "not a time"},
+        {"last_reset": "2026-11-08T00:00:00"},
+        {"last_message_time": 5},
+    ],
+)
+def test_variable_day_cost_invalid_stored_state(data: dict[str, Any]) -> None:
+    """Unusable stored state starts afresh."""
+    assert VariableDayCost.from_dict(data) == VariableDayCost()
+
+
+def test_electricity_day_reading() -> None:
+    """The day's kWh and prices are read from an electricity payload."""
+    payload = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    energy_import = payload["electricitymeter"]["energy"]["import"]
+    energy_import.update(
+        {"day": 1.5, "price": {"unitrate": 0.2, "standingcharge": None}},
+    )
+    assert electricity_day_reading(payload) == (1.5, 0.2, None)
+    energy_import["price"] = None
+    assert electricity_day_reading(payload) == (1.5, None, None)
+
+
+@pytest.mark.parametrize(
+    ("day", "price", "error"),
+    [
+        (None, {}, ValueError),
+        ("lots", {}, ValueError),
+        (1.0, [0.2], TypeError),
+        (1.0, {"unitrate": True}, TypeError),
+    ],
+)
+def test_electricity_day_reading_invalid(
+    day: Any,
+    price: Any,
+    error: type[Exception],
+) -> None:
+    """An unusable day's kWh or price raises."""
+    payload = json.loads(json.dumps(ELECTRICITY_PAYLOAD))
+    payload["electricitymeter"]["energy"]["import"].update({"day": day, "price": price})
+    with pytest.raises(error):
+        electricity_day_reading(payload)
+
+
+@pytest.mark.parametrize(
+    ("state", "unit", "rate"),
+    [
+        ("0.25", "GBP/kWh", 0.25),
+        ("0.25", "£/kWh", 0.25),
+        ("25", "p/kWh", 0.25),
+        ("-2.5", "p / kWh", -0.025),
+    ],
+)
+def test_unit_rate_from_state(state: str, unit: str, rate: float) -> None:
+    """A unit rate sensor's state is read in GBP/kWh."""
+    assert unit_rate_from_state(state, unit) == pytest.approx(rate)
+
+
+@pytest.mark.parametrize(
+    ("state", "unit"),
+    [
+        ("0.25", None),
+        ("0.25", "GBP"),
+        ("unavailable", "GBP/kWh"),
+        ("nan", "GBP/kWh"),
+    ],
+)
+def test_unit_rate_from_state_invalid(state: str, unit: str | None) -> None:
+    """An unusable unit rate sensor state raises."""
+    with pytest.raises(ValueError, match=r"."):
+        unit_rate_from_state(state, unit)
+
+
+def test_variable_day_cost_trusted_zero_rate() -> None:
+    """A trusted 0 unit rate is used straight away."""
+    cost = VariableDayCost()
+    cost.update(_utc("2026-11-07T10:00:00"), DAY_1, 10.0, 0.2, 0.5)
+    cost.update(
+        _utc("2026-11-07T10:01:00"),
+        DAY_1,
+        10.0,
+        0.0,
+        0.5,
+        trust_zero_rate=True,
+    )
+    assert cost.update(_utc("2026-11-07T11:00:00"), DAY_1, 15.0, 0.2, 0.5) == 2.5

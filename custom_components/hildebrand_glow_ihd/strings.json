@@ -17,6 +17,7 @@
           "name": "Name",
           "device_id": "Device ID",
           "topic_prefix": "Topic prefix",
+          "electricity_tariff_type": "Electricity tariff type",
           "time_zone_electricity": "Electricity meter time zone",
           "time_zone_gas": "Gas meter time zone"
         },
@@ -24,20 +25,23 @@
           "name": "Used for the device's name and the start of new entity IDs, e.g. Home gives sensor.home_electricity_import.",
           "device_id": "Leave as + to detect every Glow device publishing to your MQTT broker. To read one device only, enter its ID from its topics, e.g. AABBCCDDEEFF in glow/AABBCCDDEEFF/STATE.",
           "topic_prefix": "The first part of the device's MQTT topics. Leave as glow unless you changed it on the device.",
+          "electricity_tariff_type": "Choose Fixed if your electricity unit rate stays the same all day. Choose Variable if it changes during the day: Electricity: Cost (Today) then adds up each reading's usage at the rate at the time, and the week and month cost sensors aren't made.",
           "time_zone_electricity": "The time zone the electricity meter's daily totals reset in.",
           "time_zone_gas": "The time zone the gas meter's daily totals reset in. Some gas meters reset at midnight UTC, if yours does choose UTC."
         }
       },
       "discovery_confirm": {
         "title": "Hildebrand Glow IHD Integration",
-        "description": "Found Glow device {device_id} publishing to your MQTT broker. Give it a name, choose the time zones its meters use, then submit to add it.",
+        "description": "Found Glow device {device_id} publishing to your MQTT broker. Give it a name, choose the electricity tariff type and the time zones its meters use, then submit to add it.",
         "data": {
           "name": "Name",
+          "electricity_tariff_type": "Electricity tariff type",
           "time_zone_electricity": "Electricity meter time zone",
           "time_zone_gas": "Gas meter time zone"
         },
         "data_description": {
           "name": "Used for the device's name and the start of new entity IDs, e.g. Home gives sensor.home_electricity_import.",
+          "electricity_tariff_type": "Choose Fixed if your electricity unit rate stays the same all day. Choose Variable if it changes during the day: Electricity: Cost (Today) then adds up each reading's usage at the rate at the time, and the week and month cost sensors aren't made.",
           "time_zone_electricity": "The time zone the electricity meter's daily totals reset in.",
           "time_zone_gas": "The time zone the gas meter's daily totals reset in. Some gas meters reset at midnight UTC, if yours does choose UTC."
         }
@@ -62,15 +66,27 @@
     "step": {
       "init": {
         "title": "Hildebrand Glow IHD Integration",
-        "description": "Change the time zones the meters use. To change the device ID or topic prefix, use Reconfigure.",
+        "description": "Change the electricity tariff type and the time zones the meters use. To change the device ID or topic prefix, use Reconfigure.",
         "data": {
+          "electricity_tariff_type": "Electricity tariff type",
+          "electricity_unit_rate_entity": "Electricity unit rate sensor",
           "time_zone_electricity": "Electricity meter time zone",
           "time_zone_gas": "Gas meter time zone"
         },
         "data_description": {
+          "electricity_tariff_type": "Choose Fixed if your electricity unit rate stays the same all day. Choose Variable if it changes during the day: Electricity: Cost (Today) then adds up each reading's usage at the rate at the time, and the week and month cost sensors aren't made.",
+          "electricity_unit_rate_entity": "Variable tariff only, optional. A sensor with your current unit rate in GBP/kWh or p/kWh, e.g. from your supplier's integration, for when the IHD doesn't report rate changes. While it is unavailable the IHD's rate is used.",
           "time_zone_electricity": "The time zone the electricity meter's daily totals reset in.",
           "time_zone_gas": "The time zone the gas meter's daily totals reset in. Some gas meters reset at midnight UTC, if yours does choose UTC."
         }
+      }
+    }
+  },
+  "selector": {
+    "electricity_tariff_type": {
+      "options": {
+        "fixed": "Fixed",
+        "variable": "Variable"
       }
     }
   },
@@ -83,6 +99,17 @@
     "no_messages": {
       "title": "No messages from a Glow device",
       "description": "{title} hasn't received any messages on {topic} in the {minutes} minutes since it was set up, so it has no sensors.\n\nCheck that the Glow device is publishing to your MQTT broker, and that the entry's device ID and topic prefix match its topics. You can change them with Reconfigure on the integration's page. This issue goes away when a message arrives."
+    },
+    "period_costs_removed": {
+      "title": "Electricity cost sensors removed",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Electricity cost sensors removed",
+            "description": "{title} was changed to a variable electricity tariff, so these sensors were removed:\n\n{entities}\n\nThe IHD only reports the current unit rate, so the week's and month's kWh can't be priced on a variable tariff. Check any automations, scripts, dashboards and the Energy dashboard that used them. Their history is kept, and changing back to a fixed tariff under Configure makes them again.\n\nSubmit to dismiss this notice."
+          }
+        }
+      }
     }
   },
   "entity": {
